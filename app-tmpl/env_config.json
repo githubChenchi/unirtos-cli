@@ -1,0 +1,14 @@
+{
+  "unirtos_root": "",
+  "sdk": {
+    "version": "2.1.0",
+    "manifest_repo_url": "https://github.com/githubChenchi/unirtos-sdk-manifests.git"
+  },
+  "libraries": [
+    {
+      "name": "component_a",
+      "version": "2.0.0",
+      "manifest_repo_url": "https://github.com/githubChenchi/unirtos-libs-manifests.git"
+    }
+  ]
+}

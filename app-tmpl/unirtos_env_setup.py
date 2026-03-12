@@ -10,31 +10,32 @@ import platform
 import xml.etree.ElementTree as ET
 import argparse
 
-# 禁用SSL证书验证，解决GitHub资源下载时的证书校验问题
+# Disable SSL certificate verification to resolve certificate validation issues when downloading GitHub resources
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# ===================== 命令行参数解析模块 =====================
+# ===================== Command-line Argument Parsing Module =====================
 def parse_args():
     """
-    解析命令行入参，指定环境初始化所需的JSON配置文件路径
+    Parse command-line arguments to specify the path of JSON configuration file 
+    required for environment initialization.
     
     Returns:
-        argparse.Namespace: 解析后的命令行参数对象，包含config参数
+        argparse.Namespace: Parsed command-line argument object containing 'config' parameter
     """
-    parser = argparse.ArgumentParser(description="Unirtos 环境初始化通用脚本")
-    parser.add_argument("-c", "--config", required=True, help="JSON配置文件路径")
+    parser = argparse.ArgumentParser(description="Unirtos Environment Initialization Universal Script")
+    parser.add_argument("-c", "--config", required=True, help="Path to JSON configuration file")
     return parser.parse_args()
 
-# ===================== 基础工具函数模块 =====================
+# ===================== Basic Utility Functions Module =====================
 def get_os_type():
     """
-    获取当前操作系统类型
+    Get current operating system type.
     
     Returns:
-        str: 操作系统类型（Linux/Windows）
+        str: Operating system type (Linux/Windows)
     
     Raises:
-        RuntimeError: 不支持的操作系统类型
+        RuntimeError: Unsupported operating system type
     """
     sys_platform = platform.system()
     if sys_platform == "Linux":
@@ -42,17 +43,46 @@ def get_os_type():
     elif sys_platform == "Windows":
         return "Windows"
     else:
-        raise RuntimeError(f"不支持的系统：{sys_platform}")
+        raise RuntimeError(f"Unsupported operating system: {sys_platform}")
+
+def get_repo_path() -> Path:
+    """
+    Get absolute path of 'repo' tool in the same directory as current script.
+    
+    Returns:
+        Path: Absolute path to 'repo' executable
+    
+    Raises:
+        RuntimeError: If 'repo' file not found in script directory
+    """
+    # Get current script's directory (absolute path)
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__))).absolute()
+    repo_path = script_dir / "repo"
+    
+    # Validate repo file exists
+    if not repo_path.exists():
+        raise RuntimeError(
+            f"ERROR: 'repo' tool not found in script directory: {repo_path}\n"
+            "Resolution: Place 'repo' executable in the same directory as this script."
+        )
+    
+    # Make repo executable (Linux/macOS only)
+    if get_os_type() != "Windows" and not os.access(repo_path, os.X_OK):
+        os.chmod(repo_path, 0o755)
+        print(f"INFO: Granted executable permission to repo tool: {repo_path}", flush=True)
+    
+    return repo_path
 
 def get_unirtos_root(config):
     """
-    获取Unirtos根目录路径（优先使用配置文件指定路径，无则使用默认路径）
+    Get Unirtos root directory path (prioritize path specified in configuration file, 
+    use default path if not specified).
     
     Args:
-        config (dict): 环境配置字典
+        config (dict): Environment configuration dictionary
     
     Returns:
-        Path: Unirtos根目录路径对象
+        Path: Unirtos root directory path object
     """
     if config.get("unirtos_root") and config["unirtos_root"].strip():
         return Path(config["unirtos_root"]).expanduser().absolute()
@@ -60,20 +90,25 @@ def get_unirtos_root(config):
 
 def run_command(cmd, cwd=None, check=True):
     """
-    跨平台执行Shell命令
+    Cross-platform execution of shell commands.
     
     Args:
-        cmd (str): 待执行的命令字符串
-        cwd (Path, optional): 命令执行的工作目录，默认None
-        check (bool, optional): 是否检查命令执行结果，默认True
+        cmd (str): Command string to be executed (supports 'repo' placeholder)
+        cwd (Path, optional): Working directory for command execution, default None
+        check (bool, optional): Whether to check command execution result, default True
     
     Returns:
-        str: 命令执行的标准输出内容
+        str: Standard output content of command execution
     
     Raises:
-        CalledProcessError: 命令执行失败时抛出异常（包含错误信息）
+        CalledProcessError: Thrown when command execution fails (contains error information)
     """
-    if get_os_type() == "Windows" and "repo" in cmd:
+    # Replace 'repo' in command with absolute path of script-local repo
+    repo_path = str(get_repo_path())
+    cmd = cmd.replace("repo", repo_path)
+    
+    # Windows compatibility (run repo via bash)
+    if get_os_type() == "Windows":
         cmd = f"bash -c \"{cmd}\""
     
     try:
@@ -88,55 +123,60 @@ def run_command(cmd, cwd=None, check=True):
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"命令执行失败：{cmd}")
-        print(f"错误信息：{e.stderr}")
+        print(f"Command execution failed: {cmd}", flush=True)
+        print(f"Error message: {e.stderr}", flush=True)
         raise
 
 def check_repo_installed():
     """
-    检测系统是否已安装repo工具
+    Validate script-local 'repo' tool.
     
     Raises:
-        RuntimeError: 未检测到repo工具时抛出异常（包含安装指引）
+        RuntimeError: Thrown when script-local repo tool is missing/invalid
     """
     try:
+        # Use script-local repo to check version (no system dependency)
         run_command("repo --version", check=True)
-        print("repo工具已安装")
-    except:
-        raise RuntimeError("未检测到repo工具，请先安装（参考：https://gerrit.googlesource.com/git-repo/）")
+        print(f"INFO: Script-local repo tool is valid: {get_repo_path()}", flush=True)
+    except Exception as e:
+        raise RuntimeError(
+            f"ERROR: Script-local repo tool validation failed: {str(e)}\n"
+            "Reference: https://gerrit.googlesource.com/git-repo/\n"
+            "Ensure 'repo' is placed in the same directory as this script."
+        )
 
 def load_config(config_path):
     """
-    加载JSON格式的环境配置文件
+    Load JSON-formatted environment configuration file.
     
     Args:
-        config_path (str): 配置文件路径
+        config_path (str): Path to configuration file
     
     Returns:
-        dict: 解析后的配置字典
+        dict: Parsed configuration dictionary
     
     Raises:
-        RuntimeError: 配置文件不存在时抛出异常
+        RuntimeError: Thrown when configuration file does not exist
     """
     config_path = Path(config_path).absolute()
     if not config_path.exists():
-        raise RuntimeError(f"配置文件不存在：{config_path}")
+        raise RuntimeError(f"Configuration file does not exist: {config_path}")
     
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
-    print(f"成功加载配置文件：{config_path}")
+    print(f"Successfully loaded configuration file: {config_path}", flush=True)
     return config
 
-# ===================== SDK 处理函数模块 =====================
+# ===================== SDK Processing Functions Module =====================
 def check_sdk_version(config):
     """
-    检测指定版本的SDK是否已存在且版本匹配
+    Check if the specified version of SDK exists and version matches.
     
     Args:
-        config (dict): 环境配置字典
+        config (dict): Environment configuration dictionary
     
     Returns:
-        bool: SDK存在且版本匹配返回True，否则返回False
+        bool: Returns True if SDK exists and version matches, otherwise False
     """
     unirtos_root = get_unirtos_root(config)
     sdk_version = config["sdk"]["version"]
@@ -147,54 +187,55 @@ def check_sdk_version(config):
         with open(version_file, "r") as f:
             current_version = f.read().strip()
         if current_version == sdk_version:
-            print(f"SDK v{sdk_version} 已存在且版本匹配")
+            print(f"SDK v{sdk_version} already exists and version matches", flush=True)
             return True
-    print(f"SDK v{sdk_version} 缺失/版本不匹配，开始拉取...")
+    print(f"SDK v{sdk_version} missing/version mismatch, starting pull process...", flush=True)
     return False
 
 def pull_sdk(config):
     """
-    拉取/更新指定版本的SDK（基于单Master分支+版本目录XML结构）
+    Pull/update specified version of SDK (based on single Master branch + version directory XML structure).
+    Uses script-local repo tool.
     
     Args:
-        config (dict): 环境配置字典
+        config (dict): Environment configuration dictionary
     
     Raises:
-        RuntimeError: 指定版本的Manifest XML文件不存在时抛出异常
+        RuntimeError: Thrown when Manifest XML file for specified version does not exist
     """
     unirtos_root = get_unirtos_root(config)
     sdk_config = config["sdk"]
     sdk_version = sdk_config["version"]
     sdk_manifest_url = sdk_config["manifest_repo_url"]
     
-    # SDK Manifest根目录（存储整个Master仓库）
+    # SDK Manifest root directory (stores entire Master repository)
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
-    # 具体版本XML目录
+    # Specific version XML directory
     sdk_manifest_dir = sdk_manifest_root / f"v{sdk_version}"
-    # SDK代码存储目录
+    # SDK code storage directory
     sdk_code_dir = unirtos_root / "sdk" / f"v{sdk_version}"
     
-    # 确保目录存在
+    # Ensure directories exist
     sdk_manifest_root.mkdir(parents=True, exist_ok=True)
     sdk_code_dir.mkdir(parents=True, exist_ok=True)
     
-    # 克隆/更新Master分支
+    # Clone/update Master branch
     if not (sdk_manifest_root / ".git").exists():
-        print(f"克隆SDK Manifest仓库(Master)到：{sdk_manifest_root}")
+        print(f"Cloning SDK Manifest repository (Master) to: {sdk_manifest_root}", flush=True)
         run_command(
             f"git clone {sdk_manifest_url} {sdk_manifest_root}",
             cwd=sdk_manifest_root.parent
         )
     else:
-        print(f"更新SDK Manifest仓库(Master)到最新版本")
+        print(f"Updating SDK Manifest repository (Master) to latest version", flush=True)
         run_command("git pull origin master", cwd=sdk_manifest_root)
     
-    # 校验版本目录下的default.xml是否存在
+    # Verify existence of default.xml in version directory
     sdk_xml_path = sdk_manifest_dir / "default.xml"
     if not sdk_xml_path.exists():
-        raise RuntimeError(f"SDK Manifest仓库Master分支中未找到：{sdk_xml_path}\n请检查是否创建v{sdk_version}目录并放入default.xml")
+        raise RuntimeError(f"Not found in SDK Manifest repository Master branch: {sdk_xml_path}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
     
-    # 初始化并同步SDK代码
+    # Initialize and sync SDK code (use script-local repo)
     repo_cache = unirtos_root / "cache" / "sdk"
     repo_cache.mkdir(parents=True, exist_ok=True)
     
@@ -209,25 +250,25 @@ def pull_sdk(config):
             cwd=sdk_code_dir
         )
     
-    print(f"同步SDK v{sdk_version}源码...")
+    print(f"Syncing SDK v{sdk_version} source code...", flush=True)
     run_command("repo sync -j4 --force-sync", cwd=sdk_code_dir)
     
-    # 写入版本标识文件
+    # Write version identifier file
     with open(sdk_code_dir / "version.txt", "w") as f:
         f.write(sdk_version)
-    print(f"SDK v{sdk_version} 拉取完成")
+    print(f"SDK v{sdk_version} pull completed", flush=True)
 
-# ===================== 库处理函数模块 =====================
+# ===================== Library Processing Functions Module =====================
 def check_lib_version(lib_config, unirtos_root):
     """
-    检测指定版本的依赖库是否已存在且版本匹配
+    Check if the specified version of dependent library exists and version matches.
     
     Args:
-        lib_config (dict): 单个库的配置字典
-        unirtos_root (Path): Unirtos根目录路径对象
+        lib_config (dict): Single library configuration dictionary
+        unirtos_root (Path): Unirtos root directory path object
     
     Returns:
-        bool: 库存在且版本匹配返回True，否则返回False
+        bool: Returns True if library exists and version matches, otherwise False
     """
     lib_name = lib_config["name"]
     lib_version = lib_config["version"]
@@ -238,54 +279,55 @@ def check_lib_version(lib_config, unirtos_root):
         with open(version_file, "r") as f:
             current_version = f.read().strip()
         if current_version == lib_version:
-            print(f"{lib_name} v{lib_version} 已存在且版本匹配")
+            print(f"{lib_name} v{lib_version} already exists and version matches", flush=True)
             return True
-    print(f"{lib_name} v{lib_version} 缺失/版本不匹配，开始拉取...")
+    print(f"{lib_name} v{lib_version} missing/version mismatch, starting pull process...", flush=True)
     return False
 
 def pull_lib(lib_config, unirtos_root):
     """
-    拉取/更新指定版本的依赖库（基于单Master分支+组件-版本目录XML结构）
+    Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
+    Uses script-local repo tool.
     
     Args:
-        lib_config (dict): 单个库的配置字典
-        unirtos_root (Path): Unirtos根目录路径对象
+        lib_config (dict): Single library configuration dictionary
+        unirtos_root (Path): Unirtos root directory path object
     
     Raises:
-        RuntimeError: 指定版本的库Manifest XML文件不存在时抛出异常
+        RuntimeError: Thrown when library Manifest XML file for specified version does not exist
     """
     lib_name = lib_config["name"]
     lib_version = lib_config["version"]
     lib_manifest_url = lib_config["manifest_repo_url"]
     
-    # 组件Manifest根目录（存储整个Master仓库）
+    # Component Manifest root directory (stores entire Master repository)
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
-    # 组件-版本XML目录
+    # Component-version XML directory
     lib_manifest_dir = lib_manifest_root / lib_name / f"v{lib_version}"
-    # 库代码存储目录
+    # Library code storage directory
     lib_code_dir = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
     
-    # 确保目录存在
+    # Ensure directories exist
     lib_manifest_root.mkdir(parents=True, exist_ok=True)
     lib_code_dir.mkdir(parents=True, exist_ok=True)
     
-    # 克隆/更新Master分支
+    # Clone/update Master branch
     if not (lib_manifest_root / ".git").exists():
-        print(f"克隆组件Manifest仓库(Master)到：{lib_manifest_root}")
+        print(f"Cloning component Manifest repository (Master) to: {lib_manifest_root}", flush=True)
         run_command(
             f"git clone {lib_manifest_url} {lib_manifest_root}",
             cwd=lib_manifest_root.parent
         )
     else:
-        print(f"更新组件Manifest仓库(Master)到最新版本")
+        print(f"Updating component Manifest repository (Master) to latest version", flush=True)
         run_command("git pull origin master", cwd=lib_manifest_root)
     
-    # 校验组件-版本目录下的default.xml是否存在
+    # Verify existence of default.xml in component-version directory
     lib_xml_path = lib_manifest_dir / "default.xml"
     if not lib_xml_path.exists():
-        raise RuntimeError(f"组件Manifest仓库Master分支中未找到：{lib_xml_path}\n请检查是否创建{lib_name}/{lib_version}目录并放入default.xml")
+        raise RuntimeError(f"Not found in component Manifest repository Master branch: {lib_xml_path}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
     
-    # 初始化并同步库代码
+    # Initialize and sync library code (use script-local repo)
     repo_cache = unirtos_root / "cache" / "libraries"
     repo_cache.mkdir(parents=True, exist_ok=True)
     
@@ -300,69 +342,69 @@ def pull_lib(lib_config, unirtos_root):
             cwd=lib_code_dir
         )
     
-    print(f"同步{lib_name} v{lib_version}源码...")
+    print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
     run_command("repo sync -j4 --force-sync", cwd=lib_code_dir)
     
-    # 写入版本标识文件
+    # Write version identifier file
     with open(lib_code_dir / "version.txt", "w") as f:
         f.write(lib_version)
-    print(f"{lib_name} v{lib_version} 拉取完成")
+    print(f"{lib_name} v{lib_version} pull completed", flush=True)
 
 def batch_process_libraries(config):
     """
-    批量处理配置文件中声明的所有依赖库（检测版本+拉取/更新）
+    Batch process all dependent libraries declared in configuration file (version check + pull/update).
     
     Args:
-        config (dict): 环境配置字典
+        config (dict): Environment configuration dictionary
     """
     unirtos_root = get_unirtos_root(config)
     for lib_config in config["libraries"]:
-        print(f"\n--- 处理库：{lib_config['name']} v{lib_config['version']} ---")
+        print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
             pull_lib(lib_config, unirtos_root)
 
-# ===================== 主流程模块 =====================
+# ===================== Main Process Module =====================
 def main():
     """
-    Unirtos环境初始化主流程（本地应用版）
-    流程说明：
-    1. 解析命令行参数并加载配置文件
-    2. 前置检测（repo工具）
-    3. 检测/拉取指定版本SDK
-    4. 批量处理依赖库
-    5. 输出环境初始化结果信息
+    Unirtos environment initialization main process (local application version)
+    Process Description:
+    1. Parse command-line arguments and load configuration file
+    2. Pre-check (script-local repo tool)
+    3. Check/pull specified version of SDK
+    4. Batch process dependent libraries
+    5. Output environment initialization result information
     """
     try:
-        # 解析命令行参数 + 加载配置
+        # Parse command-line arguments + load configuration
         args = parse_args()
         config = load_config(args.config)
         unirtos_root = get_unirtos_root(config)
-        print(f"Unirtos 公共存储目录：{unirtos_root}")
+        print(f"Unirtos common storage directory: {unirtos_root}", flush=True)
         
-        # 前置检测
+        # Pre-check (validate script-local repo tool)
         check_repo_installed()
         
-        # 处理SDK
-        print("\n===== 步骤1：检测/拉取SDK =====")
+        # Process SDK
+        print("\n===== Check/Pull SDK =====", flush=True)
         if not check_sdk_version(config):
             pull_sdk(config)
         
-        # 批量处理库
-        print("\n===== 步骤3：批量处理依赖库 =====")
+        # Batch process libraries
+        print("\n===== Batch Process Dependent Libraries =====", flush=True)
         batch_process_libraries(config)
         
-        # 输出最终环境信息
-        print("\n===== 环境初始化完成！=====")
+        # Output final environment information
+        print("\n===== Environment initialization completed! =====", flush=True)
         sdk_version_dir = f"v{config['sdk']['version']}"
-        print(f"SDK 路径：{unirtos_root / 'sdk' / sdk_version_dir}")
-        print("依赖库路径：")
+        print(f"SDK Path: {unirtos_root / 'sdk' / sdk_version_dir}", flush=True)
+        print("Dependent Libraries Paths:", flush=True)
         for lib in config["libraries"]:
             lib_version_dir = f"v{lib['version']}"
-            print(f"  - {lib['name']}: {unirtos_root / 'libraries' / lib['name'] / lib_version_dir}")
-        print("\n提示：可在本地应用中直接引用上述路径构建项目")
+            print(f"  - {lib['name']}: {unirtos_root / 'libraries' / lib['name'] / lib_version_dir}", flush=True)
+        print("\nNote: You can directly reference the above paths in local applications to build projects", flush=True)
     
     except Exception as e:
-        print(f"\n环境初始化失败：{str(e)}")
+        print(f"\nEnvironment initialization failed: {str(e)}", flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

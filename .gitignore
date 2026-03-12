@@ -1,0 +1,4 @@
+build
+dist
+unirtos-cli.spec
+*.egg-info

@@ -5,7 +5,8 @@ Unirtos CLI Tool (Cross-Platform: Windows/Linux/macOS)
 Core Functionality: 
   - Create Unirtos application projects (new)
   - Initialize empty directories with Unirtos templates (init)
-  - Execute environment configuration scripts (env_setup)
+  - Execute environment configuration (env_setup)
+  - Build Unirtos application (build)
   - Check CLI version (version)
 Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
 """
@@ -18,9 +19,9 @@ import platform
 from pathlib import Path
 import argparse
 import importlib.resources as resources
+import importlib
 
 # ===================== Version Compatibility Handling =====================
-# Compatibility for Python <3.8 (importlib.metadata backport)
 try:
     from importlib.metadata import version as get_pkg_version, PackageNotFoundError
 except ModuleNotFoundError:
@@ -28,16 +29,10 @@ except ModuleNotFoundError:
     PackageNotFoundError = Exception
 
 # ===================== Core Configuration =====================
-# Template directory name (embedded in package)
 TMPL_DIR_NAME = "app-tmpl"
-# Environment setup script filename (critical for runtime configuration)
-SETUP_SCRIPT_NAME = "unirtos_env_setup.py"
-# Environment configuration filename (JSON format)
 CONFIG_FILE_NAME = "env_config.json"
-# Package name (must match 'name' in setup.cfg for PyPI distribution)
 PACKAGE_NAME = "unirtos-cli"
-# Fallback development version (used when package is not installed via Pip)
-DEV_VERSION = "0.1.1"
+DEV_VERSION = "0.1.2"
 
 # ===================== Core Utility Functions =====================
 def get_os_type() -> str:
@@ -77,27 +72,20 @@ def get_tmpl_dir() -> Path:
         RuntimeError: If no valid template directory is found
     """
     try:
-        # PyPI installation: read from package resources
-        with resources.path(PACKAGE_NAME, TMPL_DIR_NAME) as tmpl_dir:
-            if tmpl_dir.exists() and tmpl_dir.is_dir():
-                return tmpl_dir
-    except ModuleNotFoundError:
-        # Development mode: read from source code directory (for internal testing)
-        base_dir = Path(os.path.dirname(os.path.abspath(__file__))).parent
-        tmpl_dir = base_dir / TMPL_DIR_NAME
-        if tmpl_dir.exists():
+        import site
+        user_site = site.getusersitepackages()
+        tmpl_dir = Path(user_site) / TMPL_DIR_NAME
+        
+        if tmpl_dir.exists() and tmpl_dir.is_dir():
             return tmpl_dir
+        else:
+            raise FileNotFoundError(f"Tools directory not exists: {tmpl_dir}")
     except Exception as e:
-        raise RuntimeError(f"ERROR: Template path resolution failed: {str(e)}") from e
-
-    # Error resolution guidance
-    resolution_guide = "\n".join([
-        "Resolution Steps:",
-        f"1. Verify {TMPL_DIR_NAME} exists in the package distribution",
-        f"2. Reinstall package: pip install --force-reinstall {PACKAGE_NAME}",
-        f"3. For development: Ensure {TMPL_DIR_NAME} is in the package root directory"
-    ])
-    raise RuntimeError(f"ERROR: Valid {TMPL_DIR_NAME} directory not found!\n{resolution_guide}")
+        raise RuntimeError(
+            f"ERROR: Tools path resolution failed: {str(e)}\n"
+            "Current user site-packages: {site.getusersitepackages() if 'site' in locals() else 'Unknown'}\n"
+            "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
+        ) from e
 
 def is_dir_empty(dir_path: Path, ignore_hidden: bool = False) -> bool:
     """
@@ -121,10 +109,7 @@ def is_dir_empty(dir_path: Path, ignore_hidden: bool = False) -> bool:
 def copy_tmpl_to_target(tmpl_dir: Path, target_dir: Path) -> None:
     """
     Copy all template files to target directory.
-    Preserves file permissions (critical for executable files like 'repo') and supports:
-    - Hidden files (e.g., .gitignore)
-    - Extensionless files (e.g., repo)
-    - Cross-platform permission compatibility
+    Preserves file permissions and supports cross-platform compatibility.
     
     Args:
         tmpl_dir: Source template directory (package-embedded or development)
@@ -166,21 +151,19 @@ def handle_init(args: argparse.Namespace) -> None:
     """
     Core initialization command.
     Key functionality:
-    1. Copy template files to empty target directory (primary use case)
-    2. Validate critical file integrity (non-empty directories)
+    1. Copy template files to empty target directory
+    2. Validate critical file integrity
     3. Ensure compliance with Unirtos application structure
     
     Args:
         args: Parsed command-line arguments (contains project_dir)
     
     Raises:
-        RuntimeError: If critical files are missing (non-empty directories)
+        RuntimeError: If critical files are missing
     """
-    # Resolve target directory (default to current working directory)
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
     print(f"INFO: Starting Unirtos environment initialization: {project_dir}")
 
-    # Step 1: Copy templates if directory is empty
     if is_dir_empty(project_dir):
         print(f"INFO: Target directory is empty - deploying Unirtos templates...")
         tmpl_dir = get_tmpl_dir()
@@ -188,11 +171,9 @@ def handle_init(args: argparse.Namespace) -> None:
     else:
         print(f"WARNING: Target directory is not empty - skipping template deployment (only validating files)")
 
-    # Step 2: Validate critical file presence
+    # Validate critical file presence 
     critical_files = {
-        "environment setup script": project_dir / SETUP_SCRIPT_NAME,
-        "configuration file": project_dir / CONFIG_FILE_NAME,
-        "repo utility": project_dir / "repo"
+        "configuration file": project_dir / CONFIG_FILE_NAME
     }
 
     missing_files = []
@@ -211,14 +192,12 @@ def handle_init(args: argparse.Namespace) -> None:
             f"ERROR: Critical Unirtos files missing: {', '.join(missing_files)}\n{error_guide}"
         )
 
-    # Final validation confirmation
     print("SUCCESS: Unirtos environment initialization completed (template deployment + integrity check passed).")
 
 def handle_new_project(args: argparse.Namespace) -> None:
     """
     Project creation command.
     Streamlines workflow: Create new directory → Initialize with templates.
-    Eliminates redundant template copy logic (reuses core init functionality).
     
     Args:
         args: Parsed command-line arguments (contains project_name)
@@ -226,11 +205,9 @@ def handle_new_project(args: argparse.Namespace) -> None:
     Raises:
         RuntimeError: If target directory exists and is non-empty
     """
-    # Resolve new project directory
     project_name = args.project_name
     target_dir = Path(project_name).absolute()
 
-    # Validate directory state
     if target_dir.exists():
         if not is_dir_empty(target_dir):
             raise RuntimeError(
@@ -239,66 +216,98 @@ def handle_new_project(args: argparse.Namespace) -> None:
             )
         print(f"WARNING: Project directory exists (empty) - reinitializing templates: {target_dir}")
     else:
-        # Create project directory
         target_dir.mkdir(parents=True, exist_ok=True)
         print(f"INFO: Created new Unirtos project directory: {target_dir}")
 
-    # Reuse init logic
-    print(f"INFO: Initializing project with Unirtos templates...")
     init_args = argparse.Namespace(project_dir=str(target_dir))
     handle_init(init_args)
 
-    # Post-creation guidance
     print(f"\nSUCCESS: Unirtos project '{project_name}' created successfully!")
     print(f"GUIDANCE:")
     print(f"  1. Navigate to project directory: cd {project_name}")
     print(f"  2. Execute environment configuration: unirtos-cli env_setup")
-    print(f"  3. For production use: Validate all critical files before deployment")
+    print(f"  3. Build project: unirtos-cli build")
+    print(f"  4. For production use: Validate all critical files before deployment")
 
 def handle_env_setup(args: argparse.Namespace) -> None:
     """
     Environment configuration execution command.
-    Executes the Unirtos environment setup script with validated Python interpreter.
+    Executes the package-internal Unirtos environment setup module.
     
     Args:
         args: Parsed command-line arguments (contains project_dir)
     
     Raises:
-        RuntimeError: If setup script/configuration is missing or execution fails
+        RuntimeError: If configuration file is missing or execution fails
     """
-    # Resolve target directory
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
-    setup_script = project_dir / SETUP_SCRIPT_NAME
     config_file = project_dir / CONFIG_FILE_NAME
 
-    # Validate prerequisite files
-    if not setup_script.exists():
-        raise RuntimeError(f"ERROR: Setup script not found: {setup_script}\nRun 'unirtos-cli init' first.")
     if not config_file.exists():
         raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
 
-    # Get validated Python command
-    python_cmd = get_python_cmd()
-    print(f"INFO: Executing Unirtos environment setup (Python: {python_cmd})")
-    print(f"INFO: Setup script: {setup_script}")
+    print(f"INFO: Executing Unirtos environment setup")
     print(f"INFO: Configuration file: {config_file}")
 
-    # Execute setup script
-    cmd = [python_cmd, str(setup_script), "--config", str(config_file)]
     try:
-        result = subprocess.run(
-            cmd,
-            cwd=project_dir,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            encoding="utf-8"
-        )
+        # Import package-internal setup module
+        env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+        
+        # Mock command line arguments for setup module
+        sys.argv = [sys.argv[0], "--config", str(config_file)]
+        env_setup.main()
+        
         print(f"\nSUCCESS: Environment configuration executed successfully!")
-        print(f"Setup Output:\n{result.stdout}")
+    except Exception as e:
+        raise RuntimeError(f"ERROR: Setup module failed: {str(e)}") from e
+
+def handle_build(args: argparse.Namespace) -> None:
+    """
+    Application build command.
+    Invokes package-internal build module with user-specified build parameters.
     
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"ERROR: Setup script failed:\n{e.stdout}") from e
+    Args:
+        args: Parsed command-line arguments (build_dir, jobs, project_dir)
+    
+    Raises:
+        RuntimeError: If build process fails (config missing/CMake error/make error)
+    """
+    project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+    config_file = project_dir / CONFIG_FILE_NAME
+
+    # Validate prerequisites
+    if not config_file.exists():
+        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
+
+    print(f"INFO: Starting Unirtos application build")
+    print(f"INFO: Project directory: {project_dir}")
+    print(f"INFO: Build directory: {args.build_dir}")
+    print(f"INFO: Parallel jobs: {args.jobs}")
+
+    try:
+        # Import package-internal build module
+        build_module = importlib.import_module("unirtos_cli.build")
+        
+        # Override sys.argv to pass build arguments to the module
+        sys.argv = [
+            sys.argv[0],
+            "--build-dir", args.build_dir,
+            "--jobs", str(args.jobs)
+        ]
+        
+        # Set working directory to project directory (critical for CMake)
+        original_cwd = os.getcwd()
+        os.chdir(project_dir)
+        
+        # Execute build module
+        build_module.main()
+        
+        # Restore original working directory
+        os.chdir(original_cwd)
+        
+        print(f"\nSUCCESS: Unirtos application built successfully!")
+    except Exception as e:
+        raise RuntimeError(f"ERROR: Build process failed: {str(e)}") from e
 
 def handle_version(args: argparse.Namespace) -> None:
     """
@@ -318,14 +327,12 @@ def handle_version(args: argparse.Namespace) -> None:
         except Exception as e:
             print(f"{PACKAGE_NAME} v{DEV_VERSION} (Version Detection Failed: {str(e)[:50]})")
     else:
-        # Legacy Python version fallback
         print(f"{PACKAGE_NAME} v{DEV_VERSION} (Legacy Python: {sys.version.split()[0]})")
 
 # ===================== Command Line Interface =====================
 def build_arg_parser() -> argparse.ArgumentParser:
     """
-    Build command-line argument parser.
-    Compliant with POSIX standards and Unirtos user experience.
+    Build command-line argument parser compliant with POSIX standards.
     
     Returns:
         argparse.ArgumentParser: Configured parser with subcommands
@@ -342,12 +349,15 @@ Usage Examples:
      mkdir empty-dir && cd empty-dir && unirtos-cli init
   3. Execute environment configuration:
      unirtos-cli env_setup -d /path/to/project
-  4. Check version:
+  4. Build application (default 4 parallel jobs):
+     unirtos-cli build -d /path/to/project
+  5. Build with custom parameters:
+     unirtos-cli build --build-dir my-build --jobs 8
+  6. Check version:
      unirtos-cli version
         """
     )
 
-    # Subcommand parser
     subparsers = parser.add_subparsers(dest="command", required=True, help="Core commands")
 
     # Subcommand: new (project creation)
@@ -374,12 +384,34 @@ Usage Examples:
     # Subcommand: env_setup (environment configuration)
     parser_env_setup = subparsers.add_parser(
         "env_setup",
-        help="Execute Unirtos environment configuration script (post-initialization)"
+        help="Execute Unirtos environment configuration (post-initialization)"
     )
     parser_env_setup.add_argument(
         "-d", "--project_dir",
         default=".",
         help="Project directory (default: current working directory)"
+    )
+
+    # Subcommand: build (application compilation)
+    parser_build = subparsers.add_parser(
+        "build",
+        help="Build Unirtos application (CMake + make compilation)"
+    )
+    parser_build.add_argument(
+        "-d", "--project_dir",
+        default=".",
+        help="Project directory (default: current working directory)"
+    )
+    parser_build.add_argument(
+        "-b", "--build-dir",
+        default="build",
+        help="CMake build directory (default: build/)"
+    )
+    parser_build.add_argument(
+        "-j", "--jobs",
+        type=int,
+        default=4,
+        help="Number of parallel make jobs (default: 4, optimizes compilation speed)"
     )
 
     # Subcommand: version (version information)
@@ -393,19 +425,17 @@ Usage Examples:
 # ===================== Main Entry Point =====================
 def main() -> None:
     """
-    Main entry point for Unirtos CLI.
-    Implements robust error handling and user feedback for enterprise environments.
+    Main entry point for Unirtos CLI with robust error handling.
     """
     try:
-        # Parse command-line arguments (POSIX-compliant)
         parser = build_arg_parser()
         args = parser.parse_args()
 
-        # Route to appropriate command handler
         command_handlers = {
             "new": handle_new_project,
             "init": handle_init,
             "env_setup": handle_env_setup,
+            "build": handle_build,
             "version": handle_version
         }
 
@@ -414,12 +444,11 @@ def main() -> None:
         else:
             parser.print_help()
 
-    # Error handling
     except RuntimeError as e:
         print(f"\nERROR: {str(e)}")
         sys.exit(1)
     except KeyboardInterrupt:
-        print("\nWARNING: Operation interrupted by user - Unirtos initialization aborted.")
+        print("\nWARNING: Operation interrupted by user - Unirtos CLI aborted.")
         sys.exit(0)
     except Exception as e:
         print(f"\nCRITICAL ERROR: Unirtos CLI execution failed: {str(e)}")

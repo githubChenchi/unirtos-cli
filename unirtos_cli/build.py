@@ -1,17 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Unirtos Application Build Script (Commercial Edition)
+Unirtos Build Module
+Core Functionality:
+  - Resolve Unirtos component paths (SDK/libraries)
+  - Execute CMake configuration and parallel compilation
+  - Support cross-platform build process
 Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
-
-Core Functionalities:
-1. Automatically load environment configuration from env_config.json (fixed path)
-2. Validate and pull required Unirtos SDK/libraries via unirtos_env_setup.py
-3. Auto-download missing SDK/library versions before compilation
-4. Pass SDK/library root directories (containing their CMakeLists.txt) to app CMake
-5. Dynamically pass library name list to CMake (no hardcoding)
-6. Execute CMake configuration and parallel make compilation
 """
+
 import os
 import sys
 import subprocess
@@ -19,27 +16,24 @@ import argparse
 from pathlib import Path
 import json
 
-# Import core interfaces from unirtos_env_setup.py (same directory requirement)
+# Import package-internal environment setup module (关键修改：包内导入)
 try:
-    import unirtos_env_setup as env
+    from unirtos_cli import unirtos_env_setup as env
 except ImportError:
-    raise RuntimeError(
-        "ERROR: unirtos_env_setup.py not found in current directory!\n"
-        "Resolution: Ensure unirtos_env_setup.py exists in the same directory as build.py, "
-        "or generate it via 'unirtos-cli init'."
-    )
+    # Fallback for development mode (本地调试)
+    sys.path.append(str(Path(os.path.dirname(os.path.abspath(__file__))).parent))
+    import unirtos_env_setup as env
 
 # ===================== Command Line Argument Parser =====================
 def parse_build_args() -> argparse.Namespace:
     """
-    Parse command line arguments for build script.
-    Removes config file parameter to simplify user operation (fixed env_config.json).
+    Parse command line arguments for build module.
     
     Returns:
         argparse.Namespace: Parsed command line arguments
     """
     parser = argparse.ArgumentParser(
-        description="Unirtos Application Build Script (Commercial Edition)",
+        description="Unirtos Application Build Module",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
@@ -59,7 +53,7 @@ def parse_build_args() -> argparse.Namespace:
 def load_unirtos_config() -> dict:
     """
     Load and validate environment configuration from env_config.json (fixed path).
-    Ensures configuration consistency with unirtos_env_setup.py.
+    Ensures configuration consistency with unirtos_env_setup module.
     
     Returns:
         dict: Parsed Unirtos environment configuration
@@ -94,7 +88,7 @@ def load_unirtos_config() -> dict:
 # ===================== Component Path Resolver =====================
 def get_unirtos_component_paths(config: dict) -> dict:
     """
-    Resolve absolute paths for Unirtos SDK and libraries (root directories containing CMakeLists.txt).
+    Resolve absolute paths for Unirtos SDK and libraries.
     Validates component existence and triggers auto-download for missing versions.
     
     Args:
@@ -103,8 +97,8 @@ def get_unirtos_component_paths(config: dict) -> dict:
     Returns:
         dict: Component path mapping with keys:
               - unirtos_root: Root directory for all Unirtos components
-              - sdk_path: Absolute path to target SDK version (contains SDK's CMakeLists.txt)
-              - libs_path: Dictionary of library names to their root paths (each contains lib's CMakeLists.txt)
+              - sdk_path: Absolute path to target SDK version
+              - libs_path: Dictionary of library names to their absolute paths
     """
     # Print version configuration for transparency
     print("\n===== Unirtos Version Configuration =====")
@@ -128,7 +122,7 @@ def get_unirtos_component_paths(config: dict) -> dict:
     # Validate SDK contains CMakeLists.txt
     if not (sdk_path / "CMakeLists.txt").exists():
         raise RuntimeError(f"ERROR: SDK v{sdk_version} missing CMakeLists.txt at {sdk_path}")
-    print(f"INFO: SDK v{sdk_version} path (with CMakeLists.txt): {sdk_path}")
+    print(f"INFO: SDK v{sdk_version} path: {sdk_path}")
 
     # Resolve library paths (auto-download if missing)
     libs_path = {}
@@ -146,7 +140,7 @@ def get_unirtos_component_paths(config: dict) -> dict:
             raise RuntimeError(f"ERROR: {lib_name} v{lib_version} missing CMakeLists.txt at {lib_path}")
         
         libs_path[lib_name] = lib_path
-        print(f"INFO: {lib_name} v{lib_version} path (with CMakeLists.txt): {lib_path}")
+        print(f"INFO: {lib_name} v{lib_version} path: {lib_path}")
 
     return {
         "unirtos_root": unirtos_root,
@@ -157,8 +151,8 @@ def get_unirtos_component_paths(config: dict) -> dict:
 # ===================== CMake Build Executor =====================
 def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
     """
-    Execute CMake configuration and make compilation.
-    Passes SDK/library root paths (with their CMakeLists.txt) to app CMake for import.
+    Execute CMake configuration and make compilation with dynamic component paths.
+    Passes dynamic library list to CMake (supports arbitrary library names).
     
     Args:
         config: Parsed Unirtos environment configuration
@@ -169,19 +163,19 @@ def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
         RuntimeError: If CMake configuration or make compilation fails
     """
     # Resolve application and build directories
-    app_root = Path(os.path.dirname(os.path.abspath(__file__))).absolute()
+    app_root = Path(os.getcwd()).absolute()
     build_dir_abs = app_root / build_dir
-    cmake_list_path = app_root  # App's CMakeLists.txt located in application root
+    cmake_list_path = app_root
 
-    # Get resolved component paths (SDK/lib roots with CMakeLists.txt)
+    # Get resolved component paths
     component_paths = get_unirtos_component_paths(config)
     sdk_path = component_paths["sdk_path"]
     libs_path = component_paths["libs_path"]
 
-    # Construct CMake command with dynamic parameters (pass CMake script roots)
+    # Construct CMake command with dynamic parameters
     cmake_args = [
         "cmake",
-        f"-DUNIRTOS_SDK_ROOT={sdk_path}",  # SDK root (contains SDK's CMakeLists.txt)
+        f"-DUNIRTOS_SDK_ROOT={sdk_path}",
         f"-DUNIRTOS_TOOLCHAIN_PREFIX={component_paths['unirtos_root'] / 'toolchain/arm-gcc/v12.2/bin/arm-none-eabi-'}",
         # Pass dynamic library list (pipe-separated to avoid CMake semicolon parsing issues)
         f'-DUNIRTOS_LIBS={"|".join(libs_path.keys())}',
@@ -189,7 +183,7 @@ def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
         f"-B{build_dir_abs}"
     ]
 
-    # Add library root paths to CMake arguments (each contains lib's CMakeLists.txt)
+    # Add library paths to CMake arguments (generic handling for all libraries)
     for lib_name, lib_path in libs_path.items():
         lib_name_upper = lib_name.upper()
         cmake_args.append(f"-DUNIRTOS_LIB_{lib_name_upper}={lib_path}")
@@ -212,8 +206,8 @@ def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
             "CMake configuration failed.\n"
             "Common Causes:\n"
             "1. CMake is not installed (Install: sudo apt install cmake)\n"
-            "2. SDK/library missing CMakeLists.txt (check download completeness)\n"
-            "3. Syntax errors in app's CMakeLists.txt"
+            "2. SDK download incomplete or path invalid\n"
+            "3. Syntax errors in CMakeLists.txt"
         )
 
     # Execute parallel make compilation
@@ -232,30 +226,26 @@ def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
             "Make compilation failed.\n"
             "Common Causes:\n"
             "1. Toolchain not installed (e.g., arm-none-eabi-gcc)\n"
-            "2. Errors in SDK/library CMakeLists.txt\n"
-            "3. App code incompatible with SDK/library APIs"
+            "2. Source code syntax errors\n"
+            "3. Missing dependencies in CMakeLists.txt"
         )
 
     # Print build completion and output details
-    print(f"\n✅ SUCCESS: Build completed successfully! Output directory: {build_dir_abs}")
+    print(f"\nSUCCESS: Build completed successfully! Output directory: {build_dir_abs}")
     output_files = [f for f in build_dir_abs.iterdir() if f.suffix in [".bin", ".hex", ".elf", ".dis"]]
     
     if output_files:
-        print("📦 Key Output Files:")
+        print("Key Output Files:")
         for output_file in output_files:
             print(f"  - {output_file.name}")
 
 # ===================== Main Execution Flow =====================
 def main() -> None:
     """
-    Main execution entry point for the Unirtos build script.
+    Main execution entry point for the Unirtos build module.
     Implements full build lifecycle: argument parsing → config loading → 
-    dependency validation (SDK/lib CMakeLists.txt check) → CMake configuration → compilation.
+    dependency validation → CMake configuration → compilation.
     """
-    # Print commercial header
-    print("=========================================")
-    print("  Unirtos Application Build Tool (v1.0)  ")
-    print("=========================================")
 
     try:
         # Parse command line arguments
@@ -269,17 +259,17 @@ def main() -> None:
         print("INFO: Validating repo tool integrity...")
         env.check_repo_installed()
 
-        # Execute build process (with SDK/lib CMake validation)
+        # Execute build process
         run_cmake_build(config, args.build_dir, args.jobs)
 
     except KeyboardInterrupt:
-        print("\n⚠️ WARNING: Build process interrupted by user.")
+        print("\nWARNING: Build process interrupted by user.")
         sys.exit(1)
     except RuntimeError as e:
-        print(f"\n❌ ERROR: Build failed: {str(e)}", flush=True)
+        print(f"\nERROR: Build failed: {str(e)}", flush=True)
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ CRITICAL ERROR: Unexpected build failure: {str(e)}", flush=True)
+        print(f"\nCRITICAL ERROR: Unexpected build failure: {str(e)}", flush=True)
         sys.exit(1)
 
 if __name__ == "__main__":

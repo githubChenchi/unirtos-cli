@@ -1,3 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Unirtos Environment Setup Module
+Core Functionality:
+  - Validate Unirtos environment configuration
+  - Pull SDK/libraries via package-internal repo tool
+  - Manage Unirtos root directory structure
+Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
+"""
+
 import os
 import sys
 import subprocess
@@ -9,24 +20,29 @@ from pathlib import Path
 import platform
 import xml.etree.ElementTree as ET
 import argparse
+import importlib.resources as resources
 
-# Disable SSL certificate verification to resolve certificate validation issues when downloading GitHub resources
+# Disable SSL certificate verification for GitHub resource download
 ssl._create_default_https_context = ssl._create_unverified_context
 
-# ===================== Command-line Argument Parsing Module =====================
+# ===================== Core Configuration =====================
+PACKAGE_NAME = "unirtos-cli"
+TOOLS_DIR_NAME = "tools"
+REPO_FILE_NAME = "repo"
+
+# ===================== Command-line Argument Parsing =====================
 def parse_args():
     """
-    Parse command-line arguments to specify the path of JSON configuration file 
-    required for environment initialization.
+    Parse command-line arguments for environment initialization.
     
     Returns:
-        argparse.Namespace: Parsed command-line argument object containing 'config' parameter
+        argparse.Namespace: Parsed arguments containing 'config' parameter
     """
-    parser = argparse.ArgumentParser(description="Unirtos Environment Initialization Universal Script")
+    parser = argparse.ArgumentParser(description="Unirtos Environment Initialization Module")
     parser.add_argument("-c", "--config", required=True, help="Path to JSON configuration file")
     return parser.parse_args()
 
-# ===================== Basic Utility Functions Module =====================
+# ===================== Basic Utility Functions =====================
 def get_os_type():
     """
     Get current operating system type.
@@ -45,28 +61,52 @@ def get_os_type():
     else:
         raise RuntimeError(f"Unsupported operating system: {sys_platform}")
 
+def get_tools_dir() -> Path:
+    """
+    Get absolute path of tools directory (contains repo executable) from package.
+    
+    Returns:
+        Path: Absolute path to tools directory
+    
+    Raises:
+        RuntimeError: If tools directory not found
+    """
+    try:
+        import site
+        user_site = site.getusersitepackages()
+        tools_dir = Path(user_site) / TOOLS_DIR_NAME
+        
+        if tools_dir.exists() and tools_dir.is_dir():
+            return tools_dir
+        else:
+            raise FileNotFoundError(f"Tools directory not exists: {tools_dir}")
+    except Exception as e:
+        raise RuntimeError(
+            f"ERROR: Tools path resolution failed: {str(e)}\n"
+            "Current user site-packages: {site.getusersitepackages() if 'site' in locals() else 'Unknown'}\n"
+            "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
+        ) from e
+
 def get_repo_path() -> Path:
     """
-    Get absolute path of 'repo' tool in the same directory as current script.
+    Get absolute path of 'repo' tool from package tools directory.
     
     Returns:
         Path: Absolute path to 'repo' executable
     
     Raises:
-        RuntimeError: If 'repo' file not found in script directory
+        RuntimeError: If 'repo' file not found in tools directory
     """
-    # Get current script's directory (absolute path)
-    script_dir = Path(os.path.dirname(os.path.abspath(__file__))).absolute()
-    repo_path = script_dir / "repo"
+    tools_dir = get_tools_dir()
+    repo_path = tools_dir / REPO_FILE_NAME
     
-    # Validate repo file exists
     if not repo_path.exists():
         raise RuntimeError(
-            f"ERROR: 'repo' tool not found in script directory: {repo_path}\n"
-            "Resolution: Place 'repo' executable in the same directory as this script."
+            f"ERROR: '{REPO_FILE_NAME}' tool not found in tools directory: {repo_path}\n"
+            "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
         )
     
-    # Make repo executable (Linux/macOS only)
+    # Add executable permission (Linux/macOS only)
     if get_os_type() != "Windows" and not os.access(repo_path, os.X_OK):
         os.chmod(repo_path, 0o755)
         print(f"INFO: Granted executable permission to repo tool: {repo_path}", flush=True)
@@ -75,8 +115,7 @@ def get_repo_path() -> Path:
 
 def get_unirtos_root(config):
     """
-    Get Unirtos root directory path (prioritize path specified in configuration file, 
-    use default path if not specified).
+    Get Unirtos root directory path (prioritize config path, use default if not specified).
     
     Args:
         config (dict): Environment configuration dictionary
@@ -90,24 +129,23 @@ def get_unirtos_root(config):
 
 def run_command(cmd, cwd=None, check=True):
     """
-    Cross-platform execution of shell commands.
+    Cross-platform execution of shell commands with package-internal repo tool.
     
     Args:
         cmd (str): Command string to be executed (supports 'repo' placeholder)
-        cwd (Path, optional): Working directory for command execution, default None
-        check (bool, optional): Whether to check command execution result, default True
+        cwd (Path, optional): Working directory for command execution
+        check (bool, optional): Whether to check command execution result
     
     Returns:
         str: Standard output content of command execution
     
     Raises:
-        CalledProcessError: Thrown when command execution fails (contains error information)
+        CalledProcessError: When command execution fails
     """
-    # Replace 'repo' in command with absolute path of script-local repo
     repo_path = str(get_repo_path())
     cmd = cmd.replace("repo", repo_path)
     
-    # Windows compatibility (run repo via bash)
+    # Windows compatibility (use bash to execute repo)
     if get_os_type() == "Windows":
         cmd = f"bash -c \"{cmd}\""
     
@@ -129,20 +167,19 @@ def run_command(cmd, cwd=None, check=True):
 
 def check_repo_installed():
     """
-    Validate script-local 'repo' tool.
+    Validate package-internal 'repo' tool.
     
     Raises:
-        RuntimeError: Thrown when script-local repo tool is missing/invalid
+        RuntimeError: When repo tool is missing/invalid
     """
     try:
-        # Use script-local repo to check version (no system dependency)
         run_command("repo --version", check=True)
-        print(f"INFO: Script-local repo tool is valid: {get_repo_path()}", flush=True)
+        print(f"INFO: Package-internal repo tool is valid: {get_repo_path()}", flush=True)
     except Exception as e:
         raise RuntimeError(
-            f"ERROR: Script-local repo tool validation failed: {str(e)}\n"
+            f"ERROR: Package-internal repo tool validation failed: {str(e)}\n"
             "Reference: https://gerrit.googlesource.com/git-repo/\n"
-            "Ensure 'repo' is placed in the same directory as this script."
+            "Resolution: Reinstall unirtos-cli package"
         )
 
 def load_config(config_path):
@@ -156,7 +193,7 @@ def load_config(config_path):
         dict: Parsed configuration dictionary
     
     Raises:
-        RuntimeError: Thrown when configuration file does not exist
+        RuntimeError: When configuration file does not exist
     """
     config_path = Path(config_path).absolute()
     if not config_path.exists():
@@ -167,16 +204,16 @@ def load_config(config_path):
     print(f"Successfully loaded configuration file: {config_path}", flush=True)
     return config
 
-# ===================== SDK Processing Functions Module =====================
+# ===================== SDK Processing Functions =====================
 def check_sdk_version(config):
     """
-    Check if the specified version of SDK exists and version matches.
+    Check if specified SDK version exists and matches.
     
     Args:
         config (dict): Environment configuration dictionary
     
     Returns:
-        bool: Returns True if SDK exists and version matches, otherwise False
+        bool: True if SDK exists and version matches, otherwise False
     """
     unirtos_root = get_unirtos_root(config)
     sdk_version = config["sdk"]["version"]
@@ -230,10 +267,10 @@ def pull_sdk(config):
         print(f"Updating SDK Manifest repository (Master) to latest version", flush=True)
         run_command("git pull origin master", cwd=sdk_manifest_root)
     
-    # Verify existence of default.xml in version directory
-    sdk_xml_path = sdk_manifest_dir / "default.xml"
-    if not sdk_xml_path.exists():
-        raise RuntimeError(f"Not found in SDK Manifest repository Master branch: {sdk_xml_path}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
+    # Verify manifest file in version directory
+    manifest_file = sdk_manifest_dir / "default.xml"
+    if not manifest_file.exists():
+        raise RuntimeError(f"Not found in SDK Manifest repository Master branch: {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
     
     # Initialize and sync SDK code (use script-local repo)
     repo_cache = unirtos_root / "cache" / "sdk"
@@ -279,9 +316,9 @@ def check_lib_version(lib_config, unirtos_root):
         with open(version_file, "r") as f:
             current_version = f.read().strip()
         if current_version == lib_version:
-            print(f"{lib_name} v{lib_version} already exists and version matches", flush=True)
+            print(f"Library {lib_name} v{lib_version} already exists and version matches", flush=True)
             return True
-    print(f"{lib_name} v{lib_version} missing/version mismatch, starting pull process...", flush=True)
+    print(f"Library {lib_name} v{lib_version} missing/version mismatch, starting pull process...", flush=True)
     return False
 
 def pull_lib(lib_config, unirtos_root):
@@ -323,9 +360,9 @@ def pull_lib(lib_config, unirtos_root):
         run_command("git pull origin master", cwd=lib_manifest_root)
     
     # Verify existence of default.xml in component-version directory
-    lib_xml_path = lib_manifest_dir / "default.xml"
-    if not lib_xml_path.exists():
-        raise RuntimeError(f"Not found in component Manifest repository Master branch: {lib_xml_path}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
+    manifest_file = lib_manifest_dir / "default.xml"
+    if not manifest_file.exists():
+        raise RuntimeError(f"Not found in component Manifest repository Master branch: {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
     
     # Initialize and sync library code (use script-local repo)
     repo_cache = unirtos_root / "cache" / "libraries"

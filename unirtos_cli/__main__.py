@@ -3,10 +3,10 @@
 """
 Unirtos CLI Tool (Cross-Platform: Windows/Linux/macOS)
 Core Functionality: 
-  - Create Unirtos application projects (new)
+  - Create Unirtos projects (new)
   - Initialize empty directories with Unirtos templates (init)
   - Execute environment configuration (env_setup)
-  - Build Unirtos application (build)
+  - Build Unirtos project (build)
   - Check CLI version (version)
 Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
 """
@@ -259,7 +259,7 @@ def handle_env_setup(args: argparse.Namespace) -> None:
 
 def handle_build(args: argparse.Namespace) -> None:
     """
-    Application build command.
+    Project build command.
     Invokes package-internal build module with user-specified build parameters.
     
     Args:
@@ -275,7 +275,7 @@ def handle_build(args: argparse.Namespace) -> None:
     if not config_file.exists():
         raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
 
-    print(f"INFO: Starting Unirtos application build")
+    print(f"INFO: Starting Unirtos project build")
     print(f"INFO: Project directory: {project_dir}")
     print(f"INFO: Build directory: {args.build_dir}")
     print(f"INFO: Parallel jobs: {args.jobs}")
@@ -301,7 +301,7 @@ def handle_build(args: argparse.Namespace) -> None:
         # Restore original working directory
         os.chdir(original_cwd)
         
-        print(f"\nSUCCESS: Unirtos application built successfully!")
+        print(f"\nSUCCESS: Unirtos project built successfully!")
     except Exception as e:
         raise RuntimeError(f"ERROR: Build process failed: {str(e)}") from e
 
@@ -345,7 +345,7 @@ Usage Examples:
      mkdir empty-dir && cd empty-dir && unirtos-cli init
   3. Execute environment configuration:
      unirtos-cli env_setup -d /path/to/project
-  4. Build application (default 4 parallel jobs):
+  4. Build project (default 4 parallel jobs):
      unirtos-cli build -d /path/to/project
   5. Build with custom parameters:
      unirtos-cli build --build-dir my-build --jobs 8
@@ -388,10 +388,10 @@ Usage Examples:
         help="Project directory (default: current working directory)"
     )
 
-    # Subcommand: build (application compilation)
+    # Subcommand: build (project compilation)
     parser_build = subparsers.add_parser(
         "build",
-        help="Build Unirtos application (CMake + make compilation)"
+        help="Build Unirtos project (CMake + make compilation)"
     )
     parser_build.add_argument(
         "-d", "--project_dir",

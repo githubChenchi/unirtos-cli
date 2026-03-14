@@ -33,7 +33,7 @@ def parse_build_args() -> argparse.Namespace:
         argparse.Namespace: Parsed command line arguments
     """
     parser = argparse.ArgumentParser(
-        description="Unirtos Application Build Module",
+        description="Unirtos Project Build Module",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(

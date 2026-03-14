@@ -124,29 +124,31 @@ def run_command(cmd, cwd=None, check=True):
         cmd (str): Command string to be executed (supports 'repo' placeholder)
         cwd (Path, optional): Working directory for command execution
         check (bool, optional): Whether to check command execution result
-    
     Returns:
         str: Standard output content of command execution
-    
     Raises:
         CalledProcessError: When command execution fails
     """
     repo_path = str(get_repo_path())
     os_type = get_os_type()
-
     import shutil
-    
-    # Windows adaptation: execute repo via bash (require Git bash in PATH)
+
+    env = os.environ.copy()
+    env['REPO_SKIP_VERIFY'] = '1'
+
+    is_bash_shell = 'bash' in os.environ.get('SHELL', '').lower()
+
     if os_type == "Windows":
         python_cmd = "python" if shutil.which("python") else "python3"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-        cmd = cmd.replace("\\", "/")
-        cmd = f"bash -c '{cmd}'"
+
+        if is_bash_shell:
+            cmd = cmd.replace("\\", "/")
+            cmd = f"bash -c '{cmd}'"
     else:
-        # Linux/macOS direct replacement
         python_cmd = "python3" if shutil.which("python3") else "python"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-    
+
     try:
         result = subprocess.run(
             cmd,
@@ -155,7 +157,9 @@ def run_command(cmd, cwd=None, check=True):
             check=check,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            encoding="utf-8"
+            encoding="utf-8",
+            env=env,
+            creationflags=subprocess.CREATE_NO_WINDOW if os_type == "Windows" else 0
         )
         return result.stdout
     except subprocess.CalledProcessError as e:

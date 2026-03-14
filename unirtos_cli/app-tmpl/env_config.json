@@ -10,5 +10,6 @@
       "version": "2.0.0",
       "manifest_repo_url": "https://github.com/githubChenchi/unirtos-libs-manifests.git"
     }
-  ]
+  ],
+  "repo_url": ""
 }

@@ -116,39 +116,44 @@ def get_unirtos_root(config):
         return Path(config["unirtos_root"]).expanduser().absolute()
     return Path.home() / ".unirtos"
 
-def run_command(cmd, cwd=None, check=True):
+def run_command(cmd, cwd=None, check=True, config=None):
     """
     Cross-platform execution of shell commands with package-internal repo tool.
-    
+	
     Args:
         cmd (str): Command string to be executed (supports 'repo' placeholder)
         cwd (Path, optional): Working directory for command execution
         check (bool, optional): Whether to check command execution result
-    Returns:
+        config (dict, optional): Env config dict
+    
+	Returns:
         str: Standard output content of command execution
-    Raises:
+    
+	Raises:
         CalledProcessError: When command execution fails
     """
     repo_path = str(get_repo_path())
     os_type = get_os_type()
     import shutil
-
     env = os.environ.copy()
     env['REPO_SKIP_VERIFY'] = '1'
+    
+    if config and isinstance(config, dict):
+        repo_url = config.get('repo_url', '').strip()
+        if repo_url:
+            env['REPO_URL'] = repo_url
+            print(f"INFO: Using custom repo URL: {repo_url}", flush=True)
 
     is_bash_shell = 'bash' in os.environ.get('SHELL', '').lower()
-
     if os_type == "Windows":
         python_cmd = "python" if shutil.which("python") else "python3"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-
         if is_bash_shell:
             cmd = cmd.replace("\\", "/")
             cmd = f"bash -c '{cmd}'"
     else:
         python_cmd = "python3" if shutil.which("python3") else "python"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-
     try:
         result = subprocess.run(
             cmd,
@@ -167,15 +172,18 @@ def run_command(cmd, cwd=None, check=True):
         print(f"Error message: {e.stderr}", flush=True)
         raise
 
-def check_repo_installed():
+def check_repo_installed(config):
     """
     Validate package-internal 'repo' tool.
-    
+
+    Args:
+        config (dict): Env config dict
+
     Raises:
         RuntimeError: When repo tool is missing/invalid
     """
     try:
-        run_command("repo --version", check=True)
+        run_command("repo --version", check=True, config=config)
         print(f"INFO: Package-internal repo tool is valid: {get_repo_path()}", flush=True)
     except Exception as e:
         raise RuntimeError(
@@ -183,6 +191,7 @@ def check_repo_installed():
             "Reference: https://gerrit.googlesource.com/git-repo/\n"
             "Resolution: Reinstall unirtos-cli package"
         )
+
 
 def load_config(config_path):
     """
@@ -263,11 +272,12 @@ def pull_sdk(config):
         print(f"Cloning SDK Manifest repository (Master) to: {sdk_manifest_root}", flush=True)
         run_command(
             f"git clone {sdk_manifest_url} {sdk_manifest_root}",
-            cwd=sdk_manifest_root.parent
+            cwd=sdk_manifest_root.parent,
+            config=config
         )
     else:
         print(f"Updating SDK Manifest repository (Master) to latest version", flush=True)
-        run_command("git pull origin master", cwd=sdk_manifest_root)
+        run_command("git pull origin master", cwd=sdk_manifest_root, config=config)
     
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"
@@ -281,16 +291,18 @@ def pull_sdk(config):
     if not (sdk_code_dir / ".repo").exists():
         run_command(
             f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
-            cwd=sdk_code_dir
+            cwd=sdk_code_dir,
+            config=config
         )
     else:
         run_command(
             f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
-            cwd=sdk_code_dir
+            cwd=sdk_code_dir,
+            config=config
         )
     
     print(f"Syncing SDK v{sdk_version} source code...", flush=True)
-    run_command("repo sync -j4 --force-sync", cwd=sdk_code_dir)
+    run_command("repo sync -j4 --force-sync", cwd=sdk_code_dir, config=config)
     
     # Write version identifier file
     with open(sdk_code_dir / "version.txt", "w") as f:
@@ -323,7 +335,7 @@ def check_lib_version(lib_config, unirtos_root):
     print(f"Library {lib_name} v{lib_version} missing/version mismatch, starting pull process...", flush=True)
     return False
 
-def pull_lib(lib_config, unirtos_root):
+def pull_lib(lib_config, unirtos_root, config):
     """
     Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
     Uses script-local repo tool.
@@ -331,7 +343,7 @@ def pull_lib(lib_config, unirtos_root):
     Args:
         lib_config (dict): Single library configuration dictionary
         unirtos_root (Path): Unirtos root directory path object
-    
+    	config (dict): Env config dict
     Raises:
         RuntimeError: Thrown when library Manifest XML file for specified version does not exist
     """
@@ -355,11 +367,12 @@ def pull_lib(lib_config, unirtos_root):
         print(f"Cloning component Manifest repository (Master) to: {lib_manifest_root}", flush=True)
         run_command(
             f"git clone {lib_manifest_url} {lib_manifest_root}",
-            cwd=lib_manifest_root.parent
+            cwd=lib_manifest_root.parent,
+            config=config
         )
     else:
         print(f"Updating component Manifest repository (Master) to latest version", flush=True)
-        run_command("git pull origin master", cwd=lib_manifest_root)
+        run_command("git pull origin master", cwd=lib_manifest_root, config=config)
     
     # Verify existence of default.xml in component-version directory
     manifest_file = lib_manifest_dir / "default.xml"
@@ -373,16 +386,18 @@ def pull_lib(lib_config, unirtos_root):
     if not (lib_code_dir / ".repo").exists():
         run_command(
             f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
-            cwd=lib_code_dir
+            cwd=lib_code_dir,
+            config=config
         )
     else:
         run_command(
             f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
-            cwd=lib_code_dir
+            cwd=lib_code_dir,
+            config=config
         )
     
     print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
-    run_command("repo sync -j4 --force-sync", cwd=lib_code_dir)
+    run_command("repo sync -j4 --force-sync", cwd=lib_code_dir, config=config)
     
     # Write version identifier file
     with open(lib_code_dir / "version.txt", "w") as f:
@@ -392,7 +407,6 @@ def pull_lib(lib_config, unirtos_root):
 def batch_process_libraries(config):
     """
     Batch process all dependent libraries declared in configuration file (version check + pull/update).
-    
     Args:
         config (dict): Environment configuration dictionary
     """
@@ -400,7 +414,7 @@ def batch_process_libraries(config):
     for lib_config in config["libraries"]:
         print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
-            pull_lib(lib_config, unirtos_root)
+            pull_lib(lib_config, unirtos_root, config)
 
 # ===================== Main Process Module =====================
 def main():
@@ -421,7 +435,7 @@ def main():
         print(f"Unirtos common storage directory: {unirtos_root}", flush=True)
         
         # Pre-check (validate script-local repo tool)
-        check_repo_installed()
+        check_repo_installed(config)
         
         # Process SDK
         print("\n===== Check/Pull SDK =====", flush=True)

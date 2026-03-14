@@ -119,9 +119,6 @@ def get_unirtos_component_paths(config: dict) -> dict:
         print(f"INFO: SDK v{sdk_version} not found - initiating download...")
         env.pull_sdk(config)
     
-    # Validate SDK contains CMakeLists.txt
-    if not (sdk_path / "CMakeLists.txt").exists():
-        raise RuntimeError(f"ERROR: SDK v{sdk_version} missing CMakeLists.txt at {sdk_path}")
     print(f"INFO: SDK v{sdk_version} path: {sdk_path}")
 
     # Resolve library paths (auto-download if missing)
@@ -134,10 +131,6 @@ def get_unirtos_component_paths(config: dict) -> dict:
         if not env.check_lib_version(lib_config, unirtos_root):
             print(f"INFO: {lib_name} v{lib_version} not found - initiating download...")
             env.pull_lib(lib_config, unirtos_root)
-        
-        # Validate library contains CMakeLists.txt
-        if not (lib_path / "CMakeLists.txt").exists():
-            raise RuntimeError(f"ERROR: {lib_name} v{lib_version} missing CMakeLists.txt at {lib_path}")
         
         libs_path[lib_name] = lib_path
         print(f"INFO: {lib_name} v{lib_version} path: {lib_path}")

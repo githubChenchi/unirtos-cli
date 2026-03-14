@@ -31,8 +31,9 @@ except ModuleNotFoundError:
 # ===================== Core Configuration =====================
 TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
-PACKAGE_NAME = "unirtos-cli"
-DEV_VERSION = "0.1.2"
+PACKAGE_NAME = "unirtos_cli"
+UNIRTOS_CLI_NAME = "unirtos-cli"
+DEV_VERSION = "0.1.3"
 
 # ===================== Core Utility Functions =====================
 def get_os_type() -> str:
@@ -62,29 +63,24 @@ def get_python_cmd() -> str:
 
 def get_tmpl_dir() -> Path:
     """
-    Resolve template directory path (PyPI-compliant, cross-platform).
-    Priority: Package embedded templates > Development mode templates.
+    Resolve template directory path (only for pip-installed package).
     
     Returns:
-        Path: Valid absolute path to template directory
+        Path: Absolute path to template directory
     
     Raises:
-        RuntimeError: If no valid template directory is found
+        RuntimeError: If template directory not found in package
     """
     try:
-        import site
-        user_site = site.getusersitepackages()
-        tmpl_dir = Path(user_site) / TMPL_DIR_NAME
-        
-        if tmpl_dir.exists() and tmpl_dir.is_dir():
-            return tmpl_dir
-        else:
-            raise FileNotFoundError(f"Tools directory not exists: {tmpl_dir}")
+        with resources.path(PACKAGE_NAME, TMPL_DIR_NAME) as tmpl_path:
+            tmpl_path = tmpl_path.absolute()
+            if tmpl_path.exists() and tmpl_path.is_dir():
+                return tmpl_path
+        raise FileNotFoundError(f"Template directory {TMPL_DIR_NAME} not found in package")
     except Exception as e:
         raise RuntimeError(
-            f"ERROR: Tools path resolution failed: {str(e)}\n"
-            "Current user site-packages: {site.getusersitepackages() if 'site' in locals() else 'Unknown'}\n"
-            "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
+            f"Tools path resolution failed: {str(e)}\n"
+            f"Resolution: Reinstall package with pip install --force-reinstall {UNIRTOS_CLI_NAME}"
         ) from e
 
 def is_dir_empty(dir_path: Path, ignore_hidden: bool = False) -> bool:
@@ -186,7 +182,7 @@ def handle_init(args: argparse.Namespace) -> None:
             "Corrective Actions:",
             f"1. Re-run 'unirtos-cli init' in an EMPTY directory to deploy full templates",
             f"2. Manually restore missing files to: {project_dir}",
-            f"3. Reinstall Unirtos CLI: pip install --force-reinstall {PACKAGE_NAME}"
+            f"3. Reinstall Unirtos CLI: pip install --force-reinstall {UNIRTOS_CLI_NAME}"
         ])
         raise RuntimeError(
             f"ERROR: Critical Unirtos files missing: {', '.join(missing_files)}\n{error_guide}"
@@ -319,15 +315,15 @@ def handle_version(args: argparse.Namespace) -> None:
     """
     if get_pkg_version is not None:
         try:
-            pkg_version = get_pkg_version(PACKAGE_NAME)
-            print(f"{PACKAGE_NAME} v{pkg_version}")
+            pkg_version = get_pkg_version(UNIRTOS_CLI_NAME)
+            print(f"{UNIRTOS_CLI_NAME} v{pkg_version}")
             return
         except PackageNotFoundError:
-            print(f"{PACKAGE_NAME} v{DEV_VERSION} (Development Build)")
+            print(f"{UNIRTOS_CLI_NAME} v{DEV_VERSION} (Development Build)")
         except Exception as e:
-            print(f"{PACKAGE_NAME} v{DEV_VERSION} (Version Detection Failed: {str(e)[:50]})")
+            print(f"{UNIRTOS_CLI_NAME} v{DEV_VERSION} (Version Detection Failed: {str(e)[:50]})")
     else:
-        print(f"{PACKAGE_NAME} v{DEV_VERSION} (Legacy Python: {sys.version.split()[0]})")
+        print(f"{UNIRTOS_CLI_NAME} v{DEV_VERSION} (Legacy Python: {sys.version.split()[0]})")
 
 # ===================== Command Line Interface =====================
 def build_arg_parser() -> argparse.ArgumentParser:

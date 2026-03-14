@@ -26,7 +26,8 @@ import importlib.resources as resources
 ssl._create_default_https_context = ssl._create_unverified_context
 
 # ===================== Core Configuration =====================
-PACKAGE_NAME = "unirtos-cli"
+PACKAGE_NAME = "unirtos_cli"
+UNIRTOS_CLI_NAME = "unirtos-cli"
 TOOLS_DIR_NAME = "tools"
 REPO_FILE_NAME = "repo"
 
@@ -45,46 +46,33 @@ def parse_args():
 # ===================== Basic Utility Functions =====================
 def get_os_type():
     """
-    Get current operating system type.
+    Get current operating system type (standardized for cross-platform compatibility).
     
     Returns:
-        str: Operating system type (Linux/Windows)
-    
-    Raises:
-        RuntimeError: Unsupported operating system type
+        str: Operating system identifier (Windows/Linux/Darwin for macOS)
     """
-    sys_platform = platform.system()
-    if sys_platform == "Linux":
-        return "Linux"
-    elif sys_platform == "Windows":
-        return "Windows"
-    else:
-        raise RuntimeError(f"Unsupported operating system: {sys_platform}")
+    return platform.system()
 
 def get_tools_dir() -> Path:
     """
-    Get absolute path of tools directory (contains repo executable) from package.
+    Get absolute path of tools directory (only for pip-installed package).
     
     Returns:
         Path: Absolute path to tools directory
     
     Raises:
-        RuntimeError: If tools directory not found
+        RuntimeError: If tools directory not found in package
     """
     try:
-        import site
-        user_site = site.getusersitepackages()
-        tools_dir = Path(user_site) / TOOLS_DIR_NAME
-        
-        if tools_dir.exists() and tools_dir.is_dir():
-            return tools_dir
-        else:
-            raise FileNotFoundError(f"Tools directory not exists: {tools_dir}")
+        with resources.path(PACKAGE_NAME, TOOLS_DIR_NAME) as tools_path:
+            tools_path = tools_path.absolute()
+            if tools_path.exists() and tools_path.is_dir():
+                return tools_path
+        raise FileNotFoundError(f"Tools directory {TOOLS_DIR_NAME} not found in package")
     except Exception as e:
         raise RuntimeError(
-            f"ERROR: Tools path resolution failed: {str(e)}\n"
-            "Current user site-packages: {site.getusersitepackages() if 'site' in locals() else 'Unknown'}\n"
-            "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
+            f"Tools path resolution failed: {str(e)}\n"
+            f"Resolution: Reinstall package with pip install --force-reinstall {UNIRTOS_CLI_NAME}"
         ) from e
 
 def get_repo_path() -> Path:
@@ -102,14 +90,15 @@ def get_repo_path() -> Path:
     
     if not repo_path.exists():
         raise RuntimeError(
-            f"ERROR: '{REPO_FILE_NAME}' tool not found in tools directory: {repo_path}\n"
+            f"'{REPO_FILE_NAME}' tool not found in tools directory: {repo_path}\n"
             "Resolution: Reinstall package with pip install --force-reinstall unirtos-cli"
         )
     
     # Add executable permission (Linux/macOS only)
-    if get_os_type() != "Windows" and not os.access(repo_path, os.X_OK):
+    os_type = get_os_type()
+    if os_type in ["Linux", "Darwin"] and not os.access(repo_path, os.X_OK):
         os.chmod(repo_path, 0o755)
-        print(f"INFO: Granted executable permission to repo tool: {repo_path}", flush=True)
+        print(f"Granted executable permission to repo tool: {repo_path}", flush=True)
     
     return repo_path
 
@@ -143,11 +132,20 @@ def run_command(cmd, cwd=None, check=True):
         CalledProcessError: When command execution fails
     """
     repo_path = str(get_repo_path())
-    cmd = cmd.replace("repo", repo_path)
+    os_type = get_os_type()
+
+    import shutil
     
-    # Windows compatibility (use bash to execute repo)
-    if get_os_type() == "Windows":
-        cmd = f"bash -c \"{cmd}\""
+    # Windows adaptation: execute repo via bash (require Git bash in PATH)
+    if os_type == "Windows":
+        python_cmd = "python" if shutil.which("python") else "python3"
+        cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
+        cmd = cmd.replace("\\", "/")
+        cmd = f"bash -c '{cmd}'"
+    else:
+        # Linux/macOS direct replacement
+        python_cmd = "python3" if shutil.which("python3") else "python"
+        cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
     
     try:
         result = subprocess.run(

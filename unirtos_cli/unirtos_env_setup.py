@@ -30,6 +30,8 @@ PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
 TOOLS_DIR_NAME = "tools"
 REPO_FILE_NAME = "repo"
+OFFICIAL_SDK_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-sdk-manifests.git"
+OFFICIAL_LIB_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-libs-manifests.git"
 
 # ===================== Command-line Argument Parsing =====================
 def parse_args():
@@ -142,8 +144,7 @@ def run_command(cmd, cwd=None, check=True, config=None):
         repo_url = config.get('repo_url', '').strip()
         if repo_url:
             env['REPO_URL'] = repo_url
-            print(f"INFO: Using custom repo URL: {repo_url}", flush=True)
-
+    
     is_bash_shell = 'bash' in os.environ.get('SHELL', '').lower()
     if os_type == "Windows":
         python_cmd = "python" if shutil.which("python") else "python3"
@@ -254,7 +255,9 @@ def pull_sdk(config):
     unirtos_root = get_unirtos_root(config)
     sdk_config = config["sdk"]
     sdk_version = sdk_config["version"]
-    sdk_manifest_url = sdk_config["manifest_repo_url"]
+
+    sdk_manifest_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
+    print(f"INFO: Using SDK manifest repo URL: {sdk_manifest_url}", flush=True)
     
     # SDK Manifest root directory (stores entire Master repository)
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
@@ -349,7 +352,9 @@ def pull_lib(lib_config, unirtos_root, config):
     """
     lib_name = lib_config["name"]
     lib_version = lib_config["version"]
-    lib_manifest_url = lib_config["manifest_repo_url"]
+
+    lib_manifest_url = lib_config.get("manifest_repo_url", "").strip() or OFFICIAL_LIB_MANIFEST_REPO_URL
+    print(f"INFO: Using lib manifest repo URL: {lib_manifest_url}", flush=True)
     
     # Component Manifest root directory (stores entire Master repository)
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
@@ -436,6 +441,11 @@ def main():
         
         # Pre-check (validate script-local repo tool)
         check_repo_installed(config)
+
+        # Print custom repo URL
+        repo_url = config.get('repo_url', '').strip()
+        if repo_url:
+            print(f"INFO: Using custom repo URL: {repo_url}", flush=True)
         
         # Process SDK
         print("\n===== Check/Pull SDK =====", flush=True)

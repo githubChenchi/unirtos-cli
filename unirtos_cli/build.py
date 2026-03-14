@@ -6,7 +6,7 @@ Core Functionality:
   - Resolve Unirtos component paths (SDK/libraries)
   - Execute CMake configuration and parallel compilation
   - Support cross-platform build process
-Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
+Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
 import os
@@ -15,14 +15,7 @@ import subprocess
 import argparse
 from pathlib import Path
 import json
-
-# Import package-internal environment setup module (关键修改：包内导入)
-try:
-    from unirtos_cli import unirtos_env_setup as env
-except ImportError:
-    # Fallback for development mode (本地调试)
-    sys.path.append(str(Path(os.path.dirname(os.path.abspath(__file__))).parent))
-    import unirtos_env_setup as env
+from unirtos_cli import unirtos_env_setup as env
 
 # ===================== Command Line Argument Parser =====================
 def parse_build_args() -> argparse.Namespace:

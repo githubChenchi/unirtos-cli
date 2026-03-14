@@ -6,7 +6,7 @@ Core Functionality:
   - Validate Unirtos environment configuration
   - Pull SDK/libraries via package-internal repo tool
   - Manage Unirtos root directory structure
-Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
+Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
 import os

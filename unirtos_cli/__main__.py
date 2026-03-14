@@ -8,7 +8,7 @@ Core Functionality:
   - Execute environment configuration (env_setup)
   - Build Unirtos project (build)
   - Check CLI version (version)
-Copyright (c) [Your Company Name] [Year]. All Rights Reserved.
+Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
 import os

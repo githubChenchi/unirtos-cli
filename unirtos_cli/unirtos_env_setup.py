@@ -193,7 +193,6 @@ def check_repo_installed(config):
             "Resolution: Reinstall unirtos-cli package"
         )
 
-
 def load_config(config_path):
     """
     Load JSON-formatted environment configuration file.
@@ -346,14 +345,14 @@ def pull_lib(lib_config, unirtos_root, config):
     Args:
         lib_config (dict): Single library configuration dictionary
         unirtos_root (Path): Unirtos root directory path object
-    	config (dict): Env config dict
+        config (dict): Env config dict
     Raises:
         RuntimeError: Thrown when library Manifest XML file for specified version does not exist
     """
     lib_name = lib_config["name"]
     lib_version = lib_config["version"]
 
-    lib_manifest_url = lib_config.get("manifest_repo_url", "").strip() or OFFICIAL_LIB_MANIFEST_REPO_URL
+    lib_manifest_url = config["libraries"].get("manifest_repo_url", "").strip() or OFFICIAL_LIB_MANIFEST_REPO_URL
     print(f"INFO: Using lib manifest repo URL: {lib_manifest_url}", flush=True)
     
     # Component Manifest root directory (stores entire Master repository)
@@ -415,8 +414,24 @@ def batch_process_libraries(config):
     Args:
         config (dict): Environment configuration dictionary
     """
+    # Check if the 'libraries' field exists
+    if "libraries" not in config:
+        print("\n===== Skip library processing: 'libraries' field not found in config =====", flush=True)
+        return
+    
+    libraries_config = config["libraries"]
+    # Check if the 'list' field exists, is a list type, and is non-empty
+    if (
+        "list" not in libraries_config 
+        or not isinstance(libraries_config["list"], list) 
+        or len(libraries_config["list"]) == 0
+    ):
+        print("\n===== Skip library processing: 'libraries.list' is missing, not a list, or empty =====", flush=True)
+        return
+    
     unirtos_root = get_unirtos_root(config)
-    for lib_config in config["libraries"]:
+    # Iterate over the 'list' field under 'libraries'
+    for lib_config in libraries_config["list"]:
         print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
             pull_lib(lib_config, unirtos_root, config)
@@ -460,10 +475,16 @@ def main():
         print("\n===== Environment initialization completed! =====", flush=True)
         sdk_version_dir = f"v{config['sdk']['version']}"
         print(f"SDK Path: {unirtos_root / 'sdk' / sdk_version_dir}", flush=True)
-        print("Dependent Libraries Paths:", flush=True)
-        for lib in config["libraries"]:
-            lib_version_dir = f"v{lib['version']}"
-            print(f"  - {lib['name']}: {unirtos_root / 'libraries' / lib['name'] / lib_version_dir}", flush=True)
+        
+        # Output the library paths only when both 'libraries' and 'list' are valid
+        if "libraries" in config and "list" in config["libraries"] and config["libraries"]["list"]:
+            print("Dependent Libraries Paths:", flush=True)
+            for lib in config["libraries"]["list"]:
+                lib_version_dir = f"v{lib['version']}"
+                print(f"  - {lib['name']}: {unirtos_root / 'libraries' / lib['name'] / lib_version_dir}", flush=True)
+        else:
+            print("Dependent Libraries Paths: No libraries configured")
+        
         print("\nNote: You can directly reference the above paths in local applications to build projects", flush=True)
     
     except Exception as e:

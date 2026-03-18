@@ -337,46 +337,65 @@ def check_lib_version(lib_config, unirtos_root):
     print(f"Library {lib_name} v{lib_version} missing/version mismatch, starting pull process...", flush=True)
     return False
 
-def pull_lib(lib_config, unirtos_root, config):
+def prepare_lib_manifest_repo(config, unirtos_root):
     """
-    Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
-    Uses script-local repo tool.
+    Prepare library manifest repository (clone if not exists, update if exists)
+    Execute only once before processing all libraries (optimization for efficiency)
     
     Args:
-        lib_config (dict): Single library configuration dictionary
-        unirtos_root (Path): Unirtos root directory path object
         config (dict): Env config dict
-    Raises:
-        RuntimeError: Thrown when library Manifest XML file for specified version does not exist
+        unirtos_root (Path): Unirtos root directory path object
+    
+    Returns:
+        Path: Path to library manifest root directory
     """
-    lib_name = lib_config["name"]
-    lib_version = lib_config["version"]
-
+    # Get library manifest URL (fallback to official URL if not specified)
     lib_manifest_url = config["libraries"].get("manifest_repo_url", "").strip() or OFFICIAL_LIB_MANIFEST_REPO_URL
-    print(f"INFO: Using lib manifest repo URL: {lib_manifest_url}", flush=True)
-    
-    # Component Manifest root directory (stores entire Master repository)
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
-    # Component-version XML directory
-    lib_manifest_dir = lib_manifest_root / lib_name / f"v{lib_version}"
-    # Library code storage directory
-    lib_code_dir = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
     
-    # Ensure directories exist
+    # Ensure parent directory exists
     lib_manifest_root.mkdir(parents=True, exist_ok=True)
-    lib_code_dir.mkdir(parents=True, exist_ok=True)
     
-    # Clone/update Master branch
+    # Clone or update manifest repo (only once)
     if not (lib_manifest_root / ".git").exists():
-        print(f"Cloning component Manifest repository (Master) to: {lib_manifest_root}", flush=True)
+        print(f"\n--- Cloning Library Manifest repository (Master) to: {lib_manifest_root} ---", flush=True)
         run_command(
             f"git clone {lib_manifest_url} {lib_manifest_root}",
             cwd=lib_manifest_root.parent,
             config=config
         )
     else:
-        print(f"Updating component Manifest repository (Master) to latest version", flush=True)
+        print(f"\n===== Updating Library Manifest repository (Master) to latest version =====", flush=True)
         run_command("git pull origin master", cwd=lib_manifest_root, config=config)
+    
+    print(f"INFO: Library Manifest repo preparation completed: {lib_manifest_root}", flush=True)
+    return lib_manifest_root
+
+def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
+    """
+    Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
+    Uses script-local repo tool (optimized: no duplicate manifest repo clone/update)
+    
+    Args:
+        lib_config (dict): Single library configuration dictionary
+        unirtos_root (Path): Unirtos root directory path object
+        config (dict): Env config dict
+        lib_manifest_root (Path): Path to pre-prepared library manifest root directory
+    Raises:
+        RuntimeError: Thrown when library Manifest XML file for specified version does not exist
+    """
+    lib_name = lib_config["name"]
+    lib_version = lib_config["version"]
+
+    print(f"INFO: Processing library {lib_name} v{lib_version}", flush=True)
+    
+    # Component-version XML directory
+    lib_manifest_dir = lib_manifest_root / lib_name / f"v{lib_version}"
+    # Library code storage directory
+    lib_code_dir = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
+    
+    # Ensure directories exist
+    lib_code_dir.mkdir(parents=True, exist_ok=True)
     
     # Verify existence of default.xml in component-version directory
     manifest_file = lib_manifest_dir / "default.xml"
@@ -387,18 +406,11 @@ def pull_lib(lib_config, unirtos_root, config):
     repo_cache = unirtos_root / "cache" / "libraries"
     repo_cache.mkdir(parents=True, exist_ok=True)
     
-    if not (lib_code_dir / ".repo").exists():
-        run_command(
-            f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
-            cwd=lib_code_dir,
-            config=config
-        )
-    else:
-        run_command(
-            f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
-            cwd=lib_code_dir,
-            config=config
-        )
+    run_command(
+        f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
+        cwd=lib_code_dir,
+        config=config
+    )
     
     print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
     run_command("repo sync -j4 --force-sync", cwd=lib_code_dir, config=config)
@@ -429,12 +441,13 @@ def batch_process_libraries(config):
         print("\n===== Skip library processing: 'libraries.list' is missing, not a list, or empty =====", flush=True)
         return
     
+	# Iterate over the 'list' field under 'libraries'
     unirtos_root = get_unirtos_root(config)
-    # Iterate over the 'list' field under 'libraries'
+    lib_manifest_root = prepare_lib_manifest_repo(config, unirtos_root)
     for lib_config in libraries_config["list"]:
         print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
-            pull_lib(lib_config, unirtos_root, config)
+            pull_lib(lib_config, unirtos_root, config, lib_manifest_root)
 
 # ===================== Main Process Module =====================
 def main():

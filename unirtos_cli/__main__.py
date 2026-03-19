@@ -19,6 +19,7 @@ import shutil
 import subprocess
 import platform
 import json
+import time
 from pathlib import Path
 import argparse
 import importlib.resources as resources
@@ -37,6 +38,7 @@ CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
 DEV_VERSION = "0.1.3"
+UPDATE_INTERVAL = 3600
 
 # ===================== Core Utility Functions =====================
 def get_os_type() -> str:
@@ -164,7 +166,26 @@ def get_unirtos_root(config_path: Path = None) -> Path:
         return Path(config["unirtos_root"]).expanduser().absolute()
     return Path.home() / ".unirtos"
 
-def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None) -> None:
+def get_last_git_update_time(repo_dir: Path) -> float:
+    """
+    Get the timestamp of the last update of the git repository (based on the modification time of the .git/FETCH_HEAD file)
+    
+    Args:
+        repo_dir: Git repository directory path
+    
+    Returns:
+        float: Last update timestamp (in seconds), returns 0 if the file does not exist
+    """
+    fetch_head = repo_dir / ".git" / "FETCH_HEAD"
+    if fetch_head.exists():
+        return os.path.getmtime(fetch_head)
+
+    refs_head = repo_dir / ".git" / "refs" / "heads" / "master"
+    if refs_head.exists():
+        return os.path.getmtime(refs_head)
+    return 0.0
+
+def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False) -> None:
     """
     Clone or update manifest repository (reuse run_command from unirtos_env_setup).
     
@@ -172,6 +193,7 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None) -> 
         repo_url: Remote URL of manifest repository
         target_dir: Local directory to store manifest repository
         config: Environment configuration dictionary (optional)
+        force: Whether to force the execution of git pull (ignore time judgment)
     
     Raises:
         RuntimeError: If git clone/pull fails
@@ -180,9 +202,20 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None) -> 
     target_dir.parent.mkdir(parents=True, exist_ok=True)
     
     if not (target_dir / ".git").exists():
+        # If the repository does not exist: execute git clone
         env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config)
     else:
-        env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
+        # If the repository exists: determine whether git pull is needed
+        current_time = time.time()
+        last_update_time = get_last_git_update_time(target_dir)
+        time_diff = current_time - last_update_time
+        
+        if force or time_diff > UPDATE_INTERVAL:
+            # Forced update or more than 1 hour has elapsed: execute git pull
+            env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
+        else:
+            # Not timed out and not forced: skip pull
+            pass
 
 def list_local_sdk_versions(unirtos_root: Path) -> list:
     """
@@ -233,13 +266,14 @@ def list_local_lib_versions(unirtos_root: Path) -> dict:
                     lib_versions[lib_dir.name] = sorted(versions)
     return lib_versions
 
-def list_remote_sdk_versions(unirtos_root: Path, config: dict = None) -> list:
+def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: bool = False) -> list:
     """
     List remote SDK versions from official manifest repository.
     
     Args:
         unirtos_root: Path to Unirtos root directory
         config: Environment configuration dictionary (optional)
+        force: Whether to force update the manifest repository
     
     Returns:
         list: Sorted list of remote SDK versions
@@ -248,7 +282,7 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None) -> list:
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config)
+    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force)
     
     # Read version directories
     versions = []
@@ -258,13 +292,14 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None) -> list:
                 versions.append(item.name.lstrip("v"))
     return sorted(versions)
 
-def list_remote_lib_versions(unirtos_root: Path, config: dict = None) -> dict:
+def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: bool = False) -> dict:
     """
     List remote library versions from official manifest repository.
     
     Args:
         unirtos_root: Path to Unirtos root directory
         config: Environment configuration dictionary (optional)
+        force: Whether to force update the manifest repository
     
     Returns:
         dict: Dictionary of library names and their remote versions
@@ -273,7 +308,7 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None) -> dict:
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config)
+    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force)
     
     # Read library and version directories
     lib_versions = {}
@@ -529,7 +564,7 @@ def handle_ls_sdk(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            versions = list_remote_sdk_versions(unirtos_root, config)
+            versions = list_remote_sdk_versions(unirtos_root, config, args.force)
             output_data = {
                 "success": True,
                 "message": "Remote SDK versions fetched successfully",
@@ -575,7 +610,7 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            lib_versions = list_remote_lib_versions(unirtos_root, config)
+            lib_versions = list_remote_lib_versions(unirtos_root, config, args.force)
             output_data = {
                 "success": True,
                 "message": "Remote library versions fetched successfully",
@@ -630,10 +665,10 @@ Usage Examples:
      unirtos-cli ls-sdk
   8. List remote SDK versions (JSON output):
      unirtos-cli ls-sdk -r -j
-  9. List local library versions:
-     unirtos-cli ls-libs
-  10. List remote library versions (JSON output):
-      unirtos-cli ls-libs -r -j
+  9. List remote SDK versions (force update manifest repo):
+     unirtos-cli ls-sdk -r -f
+  10. List remote library versions (force update + JSON output):
+      unirtos-cli ls-libs -r -f -j
         """
     )
 
@@ -722,6 +757,11 @@ Usage Examples:
         help="List remote SDK versions from official manifest repo"
     )
     parser_ls_sdk.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force update manifest repo (ignore 1-hour sync interval, only for remote query)"
+    )
+    parser_ls_sdk.add_argument(
         "-j", "--json-output",
         action="store_true",
         help="Output result in JSON format"
@@ -748,6 +788,11 @@ Usage Examples:
         "-r", "--remote",
         action="store_true",
         help="List remote library versions from official manifest repo"
+    )
+    parser_ls_libs.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force update manifest repo (ignore 1-hour sync interval, only for remote query)"
     )
     parser_ls_libs.add_argument(
         "-j", "--json-output",

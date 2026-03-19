@@ -37,7 +37,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "0.1.3"
+DEV_VERSION = "0.1.4"
 UPDATE_INTERVAL = 3600
 
 # ===================== Core Utility Functions =====================

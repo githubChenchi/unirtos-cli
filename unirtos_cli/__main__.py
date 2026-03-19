@@ -5,9 +5,11 @@ Unirtos CLI Tool (Cross-Platform: Windows/Linux/macOS)
 Core Functionality: 
   - Create Unirtos projects (new)
   - Initialize empty directories with Unirtos templates (init)
-  - Execute environment configuration (env_setup)
+  - Execute environment configuration (env-setup)
   - Build Unirtos project (build)
   - Check CLI version (version)
+  - List local/remote SDK versions (ls-sdk)
+  - List local/remote library versions (ls-libs)
 Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
@@ -16,6 +18,7 @@ import sys
 import shutil
 import subprocess
 import platform
+import json
 from pathlib import Path
 import argparse
 import importlib.resources as resources
@@ -142,6 +145,186 @@ def copy_tmpl_to_target(tmpl_dir: Path, target_dir: Path) -> None:
     except Exception as e:
         raise RuntimeError(f"ERROR: Template copy failed: {str(e)}") from e
 
+def get_unirtos_root(config_path: Path = None) -> Path:
+    """
+    Get Unirtos root directory path (prioritize config path, use default if not specified).
+    
+    Args:
+        config_path: Path to env_config.json file (optional)
+    
+    Returns:
+        Path: Absolute path to Unirtos root directory
+    """
+    config = {}
+    if config_path and config_path.exists():
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    
+    if config.get("unirtos_root") and config["unirtos_root"].strip():
+        return Path(config["unirtos_root"]).expanduser().absolute()
+    return Path.home() / ".unirtos"
+
+def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None) -> None:
+    """
+    Clone or update manifest repository (reuse run_command from unirtos_env_setup).
+    
+    Args:
+        repo_url: Remote URL of manifest repository
+        target_dir: Local directory to store manifest repository
+        config: Environment configuration dictionary (optional)
+    
+    Raises:
+        RuntimeError: If git clone/pull fails
+    """
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    
+    if not (target_dir / ".git").exists():
+        env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config)
+    else:
+        env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
+
+def list_local_sdk_versions(unirtos_root: Path) -> list:
+    """
+    List locally installed SDK versions.
+    
+    Args:
+        unirtos_root: Path to Unirtos root directory
+    
+    Returns:
+        list: Sorted list of installed SDK versions
+    """
+    sdk_root = unirtos_root / "sdk"
+    versions = []
+    if sdk_root.exists():
+        for item in sdk_root.iterdir():
+            if item.is_dir() and item.name.startswith("v"):
+                version_file = item / "version.txt"
+                if version_file.exists():
+                    with open(version_file, "r") as f:
+                        ver = f.read().strip()
+                    versions.append(ver)
+    return sorted(versions)
+
+def list_local_lib_versions(unirtos_root: Path) -> dict:
+    """
+    List locally installed library versions (key: lib name, value: version list).
+    
+    Args:
+        unirtos_root: Path to Unirtos root directory
+    
+    Returns:
+        dict: Dictionary of library names and their installed versions
+    """
+    lib_root = unirtos_root / "libraries"
+    lib_versions = {}
+    if lib_root.exists():
+        for lib_dir in lib_root.iterdir():
+            if lib_dir.is_dir() and lib_dir.name != "manifests":
+                versions = []
+                for ver_dir in lib_dir.iterdir():
+                    if ver_dir.is_dir() and ver_dir.name.startswith("v"):
+                        version_file = ver_dir / "version.txt"
+                        if version_file.exists():
+                            with open(version_file, "r") as f:
+                                ver = f.read().strip()
+                            versions.append(ver)
+                if versions:
+                    lib_versions[lib_dir.name] = sorted(versions)
+    return lib_versions
+
+def list_remote_sdk_versions(unirtos_root: Path, config: dict = None) -> list:
+    """
+    List remote SDK versions from official manifest repository.
+    
+    Args:
+        unirtos_root: Path to Unirtos root directory
+        config: Environment configuration dictionary (optional)
+    
+    Returns:
+        list: Sorted list of remote SDK versions
+    """
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+    sdk_manifest_root = unirtos_root / "sdk" / "manifests"
+    
+    # Sync manifest repository
+    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config)
+    
+    # Read version directories
+    versions = []
+    if sdk_manifest_root.exists():
+        for item in sdk_manifest_root.iterdir():
+            if item.is_dir() and item.name.startswith("v") and (item / "default.xml").exists():
+                versions.append(item.name.lstrip("v"))
+    return sorted(versions)
+
+def list_remote_lib_versions(unirtos_root: Path, config: dict = None) -> dict:
+    """
+    List remote library versions from official manifest repository.
+    
+    Args:
+        unirtos_root: Path to Unirtos root directory
+        config: Environment configuration dictionary (optional)
+    
+    Returns:
+        dict: Dictionary of library names and their remote versions
+    """
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+    lib_manifest_root = unirtos_root / "libraries" / "manifests"
+    
+    # Sync manifest repository
+    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config)
+    
+    # Read library and version directories
+    lib_versions = {}
+    if lib_manifest_root.exists():
+        for lib_dir in lib_manifest_root.iterdir():
+            if lib_dir.is_dir():
+                versions = []
+                for ver_dir in lib_dir.iterdir():
+                    if ver_dir.is_dir() and ver_dir.name.startswith("v") and (ver_dir / "default.xml").exists():
+                        versions.append(ver_dir.name.lstrip("v"))
+                if versions:
+                    lib_versions[lib_dir.name] = sorted(versions)
+    return lib_versions
+
+def format_output(data: dict, is_json: bool) -> None:
+    """
+    Format output as JSON or human-readable text.
+    
+    Args:
+        data: Output data dictionary with structure:
+              {"success": bool, "message": str, "type": str, "data": list/dict}
+        is_json: Whether to output in JSON format
+    """
+    if is_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+    else:
+        if not data["success"]:
+            print(f"ERROR: {data['message']}")
+            return
+        
+        # Handle SDK output
+        if isinstance(data["data"], list):
+            title = "Installed SDK versions:" if data["type"] == "sdk-local" else "Remote SDK versions:"
+            print(title)
+            if data["data"]:
+                for ver in data["data"]:
+                    print(f"  - {ver}")
+            else:
+                print("  (no versions found)")
+        
+        # Handle library output
+        elif isinstance(data["data"], dict):
+            title = "Installed libraries:" if data["type"] == "lib-local" else "Remote libraries:"
+            print(title)
+            if data["data"]:
+                for lib_name, versions in data["data"].items():
+                    ver_str = ", ".join(versions) if versions else "no versions"
+                    print(f"  {lib_name}: {ver_str}")
+            else:
+                print("  (no libraries found)")
+
 # ===================== Command Handler Functions =====================
 def handle_init(args: argparse.Namespace) -> None:
     """
@@ -221,7 +404,7 @@ def handle_new_project(args: argparse.Namespace) -> None:
     print(f"\nSUCCESS: Unirtos project '{project_name}' created successfully!")
     print(f"GUIDANCE:")
     print(f"  1. Navigate to project directory: cd {project_name}")
-    print(f"  2. Execute environment configuration: unirtos-cli env_setup")
+    print(f"  2. Execute environment configuration: unirtos-cli env-setup")
     print(f"  3. Build project: unirtos-cli build")
     print(f"  4. For production use: Validate all critical files before deployment")
 
@@ -325,6 +508,98 @@ def handle_version(args: argparse.Namespace) -> None:
     else:
         print(f"{UNIRTOS_CLI_NAME} v{DEV_VERSION} (Legacy Python: {sys.version.split()[0]})")
 
+def handle_ls_sdk(args: argparse.Namespace) -> None:
+    """
+    Handle ls-sdk command to list local/remote SDK versions.
+    
+    Args:
+        args: Parsed command-line arguments (project_dir, remote, json_output)
+    """
+    try:
+        # Get config file path and Unirtos root directory
+        project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+        config_file = project_dir / CONFIG_FILE_NAME
+        unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+        
+        # Load config for manifest sync
+        config = {}
+        if config_file.exists():
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        
+        # Get versions (local/remote)
+        if args.remote:
+            versions = list_remote_sdk_versions(unirtos_root, config)
+            output_data = {
+                "success": True,
+                "message": "Remote SDK versions fetched successfully",
+                "type": "sdk-remote",
+                "data": versions
+            }
+        else:
+            versions = list_local_sdk_versions(unirtos_root)
+            output_data = {
+                "success": True,
+                "message": "Local SDK versions fetched successfully",
+                "type": "sdk-local",
+                "data": versions
+            }
+    except Exception as e:
+        output_data = {
+            "success": False,
+            "message": f"Failed to list SDK versions: {str(e)}",
+            "data": []
+        }
+    
+    # Format and print output
+    format_output(output_data, args.json_output)
+
+def handle_ls_libs(args: argparse.Namespace) -> None:
+    """
+    Handle ls-libs command to list local/remote library versions.
+    
+    Args:
+        args: Parsed command-line arguments (project_dir, remote, json_output)
+    """
+    try:
+        # Get config file path and Unirtos root directory
+        project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+        config_file = project_dir / CONFIG_FILE_NAME
+        unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+        
+        # Load config for manifest sync
+        config = {}
+        if config_file.exists():
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        
+        # Get versions (local/remote)
+        if args.remote:
+            lib_versions = list_remote_lib_versions(unirtos_root, config)
+            output_data = {
+                "success": True,
+                "message": "Remote library versions fetched successfully",
+                "type": "lib-remote",
+                "data": lib_versions
+            }
+        else:
+            lib_versions = list_local_lib_versions(unirtos_root)
+            output_data = {
+                "success": True,
+                "message": "Local library versions fetched successfully",
+                "type": "lib-local",
+                "data": lib_versions
+            }
+    except Exception as e:
+        output_data = {
+            "success": False,
+            "message": f"Failed to list library versions: {str(e)}",
+            "data": {}
+        }
+    
+    # Format and print output
+    format_output(output_data, args.json_output)
+
 # ===================== Command Line Interface =====================
 def build_arg_parser() -> argparse.ArgumentParser:
     """
@@ -344,13 +619,21 @@ Usage Examples:
   2. Initialize empty directory with templates:
      mkdir empty-dir && cd empty-dir && unirtos-cli init
   3. Execute environment configuration:
-     unirtos-cli env_setup -d /path/to/project
+     unirtos-cli env-setup -d /path/to/project
   4. Build project (default 4 parallel jobs):
      unirtos-cli build -d /path/to/project
   5. Build with custom parameters:
      unirtos-cli build --build-dir my-build --jobs 8
   6. Check version:
      unirtos-cli version
+  7. List local SDK versions (human-readable):
+     unirtos-cli ls-sdk
+  8. List remote SDK versions (JSON output):
+     unirtos-cli ls-sdk -r -j
+  9. List local library versions:
+     unirtos-cli ls-libs
+  10. List remote library versions (JSON output):
+      unirtos-cli ls-libs -r -j
         """
     )
 
@@ -379,7 +662,7 @@ Usage Examples:
 
     # Subcommand: env_setup (environment configuration)
     parser_env_setup = subparsers.add_parser(
-        "env_setup",
+        "env-setup",
         help="Execute Unirtos environment configuration (post-initialization)"
     )
     parser_env_setup.add_argument(
@@ -416,6 +699,62 @@ Usage Examples:
         help="Display Unirtos CLI version"
     )
 
+    # Subcommand: ls-sdk (list SDK versions)
+    parser_ls_sdk = subparsers.add_parser(
+        "ls-sdk",
+        help="List local/remote SDK versions"
+    )
+    parser_ls_sdk.add_argument(
+        "-d", "--project_dir",
+        default=".",
+        help="Project directory (to read env_config.json, default: current working directory)"
+    )
+    parser_ls_sdk.add_argument(
+        "-l", "--local",
+        action="store_false",
+        dest="remote",
+        default=False,
+        help="List local SDK versions (default)"
+    )
+    parser_ls_sdk.add_argument(
+        "-r", "--remote",
+        action="store_true",
+        help="List remote SDK versions from official manifest repo"
+    )
+    parser_ls_sdk.add_argument(
+        "-j", "--json-output",
+        action="store_true",
+        help="Output result in JSON format"
+    )
+
+    # Subcommand: ls-libs (list library versions)
+    parser_ls_libs = subparsers.add_parser(
+        "ls-libs",
+        help="List local/remote library versions"
+    )
+    parser_ls_libs.add_argument(
+        "-d", "--project_dir",
+        default=".",
+        help="Project directory (to read env_config.json, default: current working directory)"
+    )
+    parser_ls_libs.add_argument(
+        "-l", "--local",
+        action="store_false",
+        dest="remote",
+        default=False,
+        help="List local library versions (default)"
+    )
+    parser_ls_libs.add_argument(
+        "-r", "--remote",
+        action="store_true",
+        help="List remote library versions from official manifest repo"
+    )
+    parser_ls_libs.add_argument(
+        "-j", "--json-output",
+        action="store_true",
+        help="Output result in JSON format"
+    )
+
     return parser
 
 # ===================== Main Entry Point =====================
@@ -430,9 +769,11 @@ def main() -> None:
         command_handlers = {
             "new": handle_new_project,
             "init": handle_init,
-            "env_setup": handle_env_setup,
+            "env-setup": handle_env_setup,
             "build": handle_build,
-            "version": handle_version
+            "version": handle_version,
+            "ls-sdk": handle_ls_sdk,
+            "ls-libs": handle_ls_libs
         }
 
         if args.command in command_handlers:

@@ -33,6 +33,8 @@ REPO_FILE_NAME = "repo"
 OFFICIAL_SDK_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-sdk-manifests.git"
 OFFICIAL_LIB_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-libs-manifests.git"
 
+SYSTEM_ENCODING = "gbk" if platform.system() == "Windows" else "utf-8"
+
 # ===================== Command-line Argument Parsing =====================
 def parse_args():
     """
@@ -145,13 +147,9 @@ def run_command(cmd, cwd=None, check=True, config=None):
         if repo_url:
             env['REPO_URL'] = repo_url
     
-    is_bash_shell = 'bash' in os.environ.get('SHELL', '').lower()
     if os_type == "Windows":
         python_cmd = "python" if shutil.which("python") else "python3"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-        if is_bash_shell:
-            cmd = cmd.replace("\\", "/")
-            cmd = f"bash -c '{cmd}'"
     else:
         python_cmd = "python3" if shutil.which("python3") else "python"
         cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
@@ -163,14 +161,15 @@ def run_command(cmd, cwd=None, check=True, config=None):
             check=check,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            encoding="utf-8",
+            encoding=SYSTEM_ENCODING,
+            errors="replace",
             env=env,
-            creationflags=subprocess.CREATE_NO_WINDOW if os_type == "Windows" else 0
+            creationflags=0
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
         print(f"Command execution failed: {cmd}", flush=True)
-        print(f"Error message: {e.stderr}", flush=True)
+        print(f"Error message: {e.stderr.strip()}", flush=True)
         raise
 
 def check_repo_installed(config):
@@ -290,18 +289,11 @@ def pull_sdk(config):
     repo_cache = unirtos_root / "cache" / "sdk"
     repo_cache.mkdir(parents=True, exist_ok=True)
     
-    if not (sdk_code_dir / ".repo").exists():
-        run_command(
-            f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
-            cwd=sdk_code_dir,
-            config=config
-        )
-    else:
-        run_command(
-            f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
-            cwd=sdk_code_dir,
-            config=config
-        )
+    run_command(
+        f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
+        cwd=sdk_code_dir,
+        config=config
+    )
     
     print(f"Syncing SDK v{sdk_version} source code...", flush=True)
     run_command("repo sync -j4 --force-sync", cwd=sdk_code_dir, config=config)

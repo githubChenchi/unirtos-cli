@@ -19,12 +19,12 @@ set_target_properties(${target} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${out_unir_l
 
 # SDK global include roots are exposed through SOURCE_TOP_DIR in SDK CMake.
 target_include_directories(${target} PRIVATE 
-	${SOURCE_TOP_DIR}
+    ${SOURCE_TOP_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/main/src
 )
 
 target_include_directories(${target} PUBLIC 
-	${CMAKE_CURRENT_SOURCE_DIR}/main/inc
+    ${CMAKE_CURRENT_SOURCE_DIR}/main/inc
 )
 
 file(GLOB_RECURSE APP_SRC

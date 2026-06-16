@@ -3,9 +3,9 @@
 """
 Unirtos Build Module
 Core Functionality:
-  - Resolve Unirtos component paths (SDK/libraries)
-  - Execute CMake configuration and parallel compilation
-  - Support cross-platform build process
+    - Resolve installed SDK path from env_config.json
+    - Delegate build entry to SDK root build.sh (SDK-driven build flow)
+    - Inject external app directory so SDK can compile user app outside SDK tree
 Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
@@ -32,13 +32,23 @@ def parse_build_args() -> argparse.Namespace:
     parser.add_argument(
         "-b", "--build-dir",
         default="build",
-        help="CMake build directory (default: build/)"
+        help="Reserved compatibility option (unused in SDK-driven build mode)"
     )
     parser.add_argument(
         "-j", "--jobs",
         type=int,
-        default=4,
-        help="Number of parallel make jobs (default: 4, optimizes compilation speed)"
+        default=None,
+        help="Number of parallel build jobs (overrides env_config.json build.jobs)"
+    )
+    parser.add_argument(
+        "-m", "--module",
+        default=None,
+        help="SDK module/project name, e.g., EG800ZCN_LA (overrides env_config.json build.module)"
+    )
+    parser.add_argument(
+        "--version",
+        default=None,
+        help="SDK build version string (overrides env_config.json build.version)"
     )
     return parser.parse_args()
 
@@ -78,152 +88,131 @@ def load_unirtos_config() -> dict:
     except Exception as e:
         raise RuntimeError(f"Configuration load failed: {str(e)}")
 
-# ===================== Component Path Resolver =====================
-def get_unirtos_component_paths(config: dict) -> dict:
-    """
-    Resolve absolute paths for Unirtos SDK and libraries.
-    Validates component existence and triggers auto-download for missing versions.
-    
-    Args:
-        config: Parsed Unirtos environment configuration dictionary
-    
-    Returns:
-        dict: Component path mapping with keys:
-              - unirtos_root: Root directory for all Unirtos components
-              - sdk_path: Absolute path to target SDK version
-              - libs_path: Dictionary of library names to their absolute paths
-    """
-    # Print version configuration for transparency
-    print("\n===== Unirtos Version Configuration =====")
-    print(f"SDK Version: {config['sdk']['version']}")
-    for lib_config in config["libraries"]:
-        print(f"{lib_config['name']} Version: {lib_config['version']}")
-    print("=========================================\n")
-
-    # Get Unirtos root directory
+def resolve_sdk_path(config: dict) -> Path:
+    """Resolve installed SDK path and auto-pull when missing."""
     unirtos_root = env.get_unirtos_root(config)
-    print(f"INFO: Unirtos root directory: {unirtos_root}")
-
-    # Resolve SDK path (auto-download if missing)
     sdk_version = config["sdk"]["version"]
     sdk_path = unirtos_root / "sdk" / f"v{sdk_version}"
-    
+
+    print("\n===== Unirtos Version Configuration =====")
+    print(f"SDK Version: {sdk_version}")
+    print("=========================================\n")
+    print(f"INFO: Unirtos root directory: {unirtos_root}")
+
     if not env.check_sdk_version(config):
         print(f"INFO: SDK v{sdk_version} not found - initiating download...")
         env.pull_sdk(config)
-    
+
     print(f"INFO: SDK v{sdk_version} path: {sdk_path}")
+    return sdk_path
 
-    # Resolve library paths (auto-download if missing)
-    libs_path = {}
-    for lib_config in config["libraries"]:
-        lib_name = lib_config["name"]
-        lib_version = lib_config["version"]
-        lib_path = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
-        
-        if not env.check_lib_version(lib_config, unirtos_root):
-            print(f"INFO: {lib_name} v{lib_version} not found - initiating download...")
-            env.pull_lib(lib_config, unirtos_root)
-        
-        libs_path[lib_name] = lib_path
-        print(f"INFO: {lib_name} v{lib_version} path: {lib_path}")
 
+def resolve_sdk_build_profile(config: dict, args: argparse.Namespace) -> dict:
+    """Resolve SDK build.sh make profile from env_config.json and CLI overrides."""
+    build_cfg = config.get("build", {})
+    if not isinstance(build_cfg, dict):
+        build_cfg = {}
+
+    module = args.module or build_cfg.get("module")
+    version = args.version or build_cfg.get("version") or "application"
+
+    jobs_from_config = build_cfg.get("jobs", 4)
+    jobs = args.jobs if args.jobs is not None else jobs_from_config
+
+    if not module:
+        raise RuntimeError(
+            "Missing SDK build profile. Configure 'build.module' in env_config.json, "
+            "or pass --module."
+        )
+
+    try:
+        jobs = int(jobs)
+        if jobs <= 0:
+            raise ValueError()
+    except Exception:
+        raise RuntimeError("Invalid jobs value, expected a positive integer.")
+
+    # Fixed for external app mode: type=app (output stays in app dir), operation=r (incremental)
     return {
-        "unirtos_root": unirtos_root,
-        "sdk_path": sdk_path,
-        "libs_path": libs_path
+        "project": module,
+        "version": version,
+        "type": "app",
+        "operation": "r",
+        "jobs": jobs,
     }
 
-# ===================== CMake Build Executor =====================
-def run_cmake_build(config: dict, build_dir: str, jobs: int) -> None:
+
+def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     """
-    Execute CMake configuration and make compilation with dynamic component paths.
-    Passes dynamic library list to CMake (supports arbitrary library names).
-    
-    Args:
-        config: Parsed Unirtos environment configuration
-        build_dir: Name of the CMake build directory
-        jobs: Number of parallel jobs for make compilation
-    
-    Raises:
-        RuntimeError: If CMake configuration or make compilation fails
+    Build entry: invoke SDK root build.sh and let SDK CMake pull in external app.
+
+    External app directory is injected via UNIRTOS_EXTERNAL_APP_DIR.
     """
-    # Resolve application and build directories
     app_root = Path(os.getcwd()).absolute()
-    build_dir_abs = app_root / build_dir
-    cmake_list_path = app_root
+    app_cmake = app_root / "CMakeLists.txt"
+    if not app_cmake.exists():
+        raise RuntimeError(
+            f"App CMakeLists.txt not found: {app_cmake}\n"
+            "Run 'unirtos-cli init' first or ensure this is a valid external app project directory."
+        )
 
-    # Get resolved component paths
-    component_paths = get_unirtos_component_paths(config)
-    sdk_path = component_paths["sdk_path"]
-    libs_path = component_paths["libs_path"]
+    sdk_path = resolve_sdk_path(config)
+    build_profile = resolve_sdk_build_profile(config, args)
 
-    # Construct CMake command with dynamic parameters
-    cmake_args = [
-        "cmake",
-        f"-DUNIRTOS_SDK_ROOT={sdk_path}",
-        f"-DUNIRTOS_TOOLCHAIN_PREFIX={component_paths['unirtos_root'] / 'toolchain/arm-gcc/v12.2/bin/arm-none-eabi-'}",
-        # Pass dynamic library list (pipe-separated to avoid CMake semicolon parsing issues)
-        f'-DUNIRTOS_LIBS={"|".join(libs_path.keys())}',
-        f"-S{cmake_list_path}",
-        f"-B{build_dir_abs}"
+    sdk_build_sh = sdk_path / "build.sh"
+    if not sdk_build_sh.exists():
+        raise RuntimeError(f"SDK build entry not found: {sdk_build_sh}")
+
+    cmd = [
+        str(sdk_build_sh),
+        "make",
+        build_profile["project"],
+        build_profile["version"],
+        build_profile["type"],
+        build_profile["operation"],
+        "--jobs",
+        str(build_profile["jobs"]),
     ]
 
-    # Add library paths to CMake arguments (generic handling for all libraries)
-    for lib_name, lib_path in libs_path.items():
-        lib_name_upper = lib_name.upper()
-        cmake_args.append(f"-DUNIRTOS_LIB_{lib_name_upper}={lib_path}")
-
-    # Create build directory if not exists
-    build_dir_abs.mkdir(parents=True, exist_ok=True)
+    run_env = os.environ.copy()
+    run_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(app_root)
+    run_env["UNIRTOS_EXTERNAL_APP_NAME"] = app_root.name
     
-    # Execute CMake configuration
-    print(f"\nINFO: Executing CMake command: {' '.join(cmake_args)}")
+    # Target name follows resolved version priority: CLI --version > env build.version > application.
+    target_name = build_profile["version"]
+    run_env["UNIRTOS_APP_TARGET_NAME"] = target_name
+
+    print("\nINFO: Build Mode: SDK-driven (build.sh)")
+    print(f"INFO: External app directory: {app_root}")
+    print(f"INFO: SDK build profile: {build_profile}")
+    print(f"INFO: Executing SDK build command: {' '.join(cmd)}")
+
     try:
-        subprocess.run(
-            cmake_args,
+        completed = subprocess.run(
+            cmd,
+            cwd=sdk_path,
+            env=run_env,
             check=True,
             encoding="utf-8",
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT
+            stderr=subprocess.STDOUT,
         )
-    except subprocess.CalledProcessError:
+        if completed.stdout:
+            print(completed.stdout, end="")
+    except subprocess.CalledProcessError as e:
+        output = e.stdout or ""
+        if output:
+            print(output, end="")
         raise RuntimeError(
-            "CMake configuration failed.\n"
+            "SDK build.sh execution failed.\n"
             "Common Causes:\n"
-            "1. CMake is not installed (Install: sudo apt install cmake)\n"
-            "2. SDK download incomplete or path invalid\n"
-            "3. Syntax errors in CMakeLists.txt"
+            "1. build.module/version in env_config.json are invalid\n"
+            "2. SDK CMake does not include external app injection logic\n"
+            "3. External app CMakeLists.txt is not compatible with SDK add_subdirectory flow"
         )
 
-    # Execute parallel make compilation
-    make_args = ["make", f"-j{jobs}", f"-C{build_dir_abs}"]
-    print(f"\nINFO: Executing make command: {' '.join(make_args)}")
-    try:
-        subprocess.run(
-            make_args,
-            check=True,
-            encoding="utf-8",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT
-        )
-    except subprocess.CalledProcessError:
-        raise RuntimeError(
-            "Make compilation failed.\n"
-            "Common Causes:\n"
-            "1. Toolchain not installed (e.g., arm-none-eabi-gcc)\n"
-            "2. Source code syntax errors\n"
-            "3. Missing dependencies in CMakeLists.txt"
-        )
-
-    # Print build completion and output details
-    print(f"\nSUCCESS: Build completed successfully! Output directory: {build_dir_abs}")
-    output_files = [f for f in build_dir_abs.iterdir() if f.suffix in [".bin", ".hex", ".elf", ".dis"]]
-    
-    if output_files:
-        print("Key Output Files:")
-        for output_file in output_files:
-            print(f"  - {output_file.name}")
+    release_dir = app_root / "qos_build" / "release" / build_profile["version"]
+    print(f"\nSUCCESS: Build completed successfully! Output directory: {release_dir}")
 
 # ===================== Main Execution Flow =====================
 def main() -> None:
@@ -241,12 +230,15 @@ def main() -> None:
         print("INFO: Loading environment configuration (env_config.json)...")
         config = load_unirtos_config()
 
-        # Validate repo tool availability
-        print("INFO: Validating repo tool integrity...")
-        env.check_repo_installed()
+        # Validate repo tool availability (optional in SDK-driven mode)
+        print("INFO: Validating repo tool integrity (optional)...")
+        try:
+            env.check_repo_installed(config)
+        except Exception as repo_err:
+            print(f"WARNING: Repo tool validation skipped: {repo_err}")
 
-        # Execute build process
-        run_cmake_build(config, args.build_dir, args.jobs)
+        # Execute SDK-driven build process
+        run_sdk_build(config, args)
 
     except KeyboardInterrupt:
         print("\nWARNING: Build process interrupted by user.")

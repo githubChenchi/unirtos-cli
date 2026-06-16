@@ -118,7 +118,23 @@ def get_unirtos_root(config):
     """
     if config.get("unirtos_root") and config["unirtos_root"].strip():
         return Path(config["unirtos_root"]).expanduser().absolute()
-    return Path.home() / ".unirtos"
+
+    # Cross-platform fallback: prefer explicit home env vars on Windows.
+    if platform.system() == "Windows":
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return Path(userprofile).expanduser().absolute() / ".unirtos"
+
+        homedrive = os.environ.get("HOMEDRIVE", "").strip()
+        homepath = os.environ.get("HOMEPATH", "").strip()
+        if homedrive and homepath:
+            return Path(f"{homedrive}{homepath}").expanduser().absolute() / ".unirtos"
+
+    home_env = os.environ.get("HOME", "").strip()
+    if home_env:
+        return Path(home_env).expanduser().absolute() / ".unirtos"
+
+    return Path.home().expanduser().absolute() / ".unirtos"
 
 def run_command(cmd, cwd=None, check=True, config=None):
     """

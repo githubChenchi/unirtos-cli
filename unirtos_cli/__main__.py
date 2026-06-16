@@ -37,7 +37,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "0.1.5"
+DEV_VERSION = "0.1.6"
 UPDATE_INTERVAL = 3600
 
 # ===================== Core Utility Functions =====================
@@ -164,7 +164,23 @@ def get_unirtos_root(config_path: Path = None) -> Path:
     
     if config.get("unirtos_root") and config["unirtos_root"].strip():
         return Path(config["unirtos_root"]).expanduser().absolute()
-    return Path.home() / ".unirtos"
+
+    # Cross-platform fallback: prefer explicit home env vars on Windows.
+    if get_os_type() == "Windows":
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return Path(userprofile).expanduser().absolute() / ".unirtos"
+
+        homedrive = os.environ.get("HOMEDRIVE", "").strip()
+        homepath = os.environ.get("HOMEPATH", "").strip()
+        if homedrive and homepath:
+            return Path(f"{homedrive}{homepath}").expanduser().absolute() / ".unirtos"
+
+    home_env = os.environ.get("HOME", "").strip()
+    if home_env:
+        return Path(home_env).expanduser().absolute() / ".unirtos"
+
+    return Path.home().expanduser().absolute() / ".unirtos"
 
 def get_last_git_update_time(repo_dir: Path) -> float:
     """
@@ -478,10 +494,10 @@ def handle_env_setup(args: argparse.Namespace) -> None:
 def handle_build(args: argparse.Namespace) -> None:
     """
     Project build command.
-    Invokes package-internal build module with user-specified build parameters.
+    Invokes package-internal build module with module/version (type=app, operation=r fixed).
     
     Args:
-        args: Parsed command-line arguments (build_dir, jobs, project_dir)
+        args: Parsed command-line arguments (build_dir, jobs, module, version)
     
     Raises:
         RuntimeError: If build process fails (config missing/CMake error/make error)
@@ -496,7 +512,7 @@ def handle_build(args: argparse.Namespace) -> None:
     print(f"INFO: Starting Unirtos project build")
     print(f"INFO: Project directory: {project_dir}")
     print(f"INFO: Build directory: {args.build_dir}")
-    print(f"INFO: Parallel jobs: {args.jobs}")
+    print(f"INFO: Parallel jobs override: {args.jobs if args.jobs is not None else '(not set, use config/default)'}")
 
     try:
         # Import package-internal build module
@@ -506,8 +522,14 @@ def handle_build(args: argparse.Namespace) -> None:
         sys.argv = [
             sys.argv[0],
             "--build-dir", args.build_dir,
-            "--jobs", str(args.jobs)
         ]
+
+        if args.jobs is not None:
+            sys.argv.extend(["--jobs", str(args.jobs)])
+        if args.module:
+            sys.argv.extend(["--module", args.module])
+        if args.version:
+            sys.argv.extend(["--version", args.version])
         
         # Set working directory to project directory (critical for CMake)
         original_cwd = os.getcwd()
@@ -522,6 +544,45 @@ def handle_build(args: argparse.Namespace) -> None:
         print(f"\nSUCCESS: Unirtos project built successfully!")
     except Exception as e:
         raise RuntimeError(f"ERROR: Build process failed: {str(e)}") from e
+
+def handle_clean(args: argparse.Namespace) -> None:
+    """
+    Clean build artifacts command.
+    Removes all build outputs from app directory (qos_build/).
+    
+    Args:
+        args: Parsed command-line arguments (project_dir)
+    
+    Raises:
+        RuntimeError: If config file is missing or clean fails
+    """
+    project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+    config_file = project_dir / CONFIG_FILE_NAME
+
+    # Validate prerequisites
+    if not config_file.exists():
+        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
+
+    print(f"INFO: Starting build artifact cleanup")
+    print(f"INFO: Project directory: {project_dir}")
+
+    try:
+        # Import package-internal clean module
+        clean_module = importlib.import_module("unirtos_cli.clean")
+        
+        # Set working directory to project directory
+        original_cwd = os.getcwd()
+        os.chdir(project_dir)
+        
+        # Execute clean module
+        clean_module.main()
+        
+        # Restore original working directory
+        os.chdir(original_cwd)
+        
+        print(f"\nSUCCESS: Build artifacts cleaned successfully!")
+    except Exception as e:
+        raise RuntimeError(f"ERROR: Clean failed: {str(e)}") from e
 
 def handle_version(args: argparse.Namespace) -> None:
     """
@@ -724,8 +785,31 @@ Usage Examples:
     parser_build.add_argument(
         "-j", "--jobs",
         type=int,
-        default=4,
-        help="Number of parallel make jobs (default: 4, optimizes compilation speed)"
+        default=None,
+        help="Number of parallel make jobs (priority: CLI > env_config build.jobs > 4)"
+    )
+    parser_build.add_argument(
+        "-m", "--module",
+        dest="module",
+        default=None,
+        help="SDK module/project name (e.g., EG800ZCN_LA)"
+    )
+    parser_build.add_argument(
+        "-v", "--version",
+        dest="version",
+        default=None,
+        help="SDK version string (e.g., EG800ZCNLAR01A01_BETA_OCPU_20260513)"
+    )
+
+    # Subcommand: clean (build artifact cleanup)
+    parser_clean = subparsers.add_parser(
+        "clean",
+        help="Clean all build artifacts from app directory"
+    )
+    parser_clean.add_argument(
+        "-d", "--project_dir",
+        default=".",
+        help="Project directory (default: current working directory)"
     )
 
     # Subcommand: version (version information)
@@ -816,6 +900,7 @@ def main() -> None:
             "init": handle_init,
             "env-setup": handle_env_setup,
             "build": handle_build,
+            "clean": handle_clean,
             "version": handle_version,
             "ls-sdk": handle_ls_sdk,
             "ls-libs": handle_ls_libs

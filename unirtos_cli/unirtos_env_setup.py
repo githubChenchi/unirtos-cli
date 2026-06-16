@@ -21,6 +21,8 @@ import platform
 import xml.etree.ElementTree as ET
 import argparse
 import importlib.resources as resources
+from urllib.parse import urlparse
+import re
 
 # Disable SSL certificate verification for GitHub resource download
 ssl._create_default_https_context = ssl._create_unverified_context
@@ -138,37 +140,22 @@ def get_unirtos_root(config):
 
 def run_command(cmd, cwd=None, check=True, config=None):
     """
-    Cross-platform execution of shell commands with package-internal repo tool.
+    Cross-platform execution of shell commands.
 	
     Args:
-        cmd (str): Command string to be executed (supports 'repo' placeholder)
+        cmd (str): Command string to be executed
         cwd (Path, optional): Working directory for command execution
         check (bool, optional): Whether to check command execution result
         config (dict, optional): Env config dict
     
-	Returns:
+    Returns:
         str: Standard output content of command execution
     
-	Raises:
+    Raises:
         CalledProcessError: When command execution fails
     """
-    repo_path = str(get_repo_path())
-    os_type = get_os_type()
-    import shutil
     env = os.environ.copy()
-    env['REPO_SKIP_VERIFY'] = '1'
     
-    if config and isinstance(config, dict):
-        repo_url = config.get('repo_url', '').strip()
-        if repo_url:
-            env['REPO_URL'] = repo_url
-    
-    if os_type == "Windows":
-        python_cmd = "python" if shutil.which("python") else "python3"
-        cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
-    else:
-        python_cmd = "python3" if shutil.which("python3") else "python"
-        cmd = cmd.replace("repo", f"{python_cmd} {repo_path}")
     try:
         result = subprocess.run(
             cmd,
@@ -188,25 +175,225 @@ def run_command(cmd, cwd=None, check=True, config=None):
         print(f"Error message: {e.stderr.strip()}", flush=True)
         raise
 
-def check_repo_installed(config):
+def check_git_installed(config):
     """
-    Validate package-internal 'repo' tool.
+    Validate git tool availability.
 
     Args:
         config (dict): Env config dict
 
     Raises:
-        RuntimeError: When repo tool is missing/invalid
+        RuntimeError: When git is missing/invalid
     """
     try:
-        run_command("repo --version", check=True, config=config)
-        print(f"INFO: Package-internal repo tool is valid: {get_repo_path()}", flush=True)
+        version = run_command("git --version", check=True, config=config).strip()
+        print(f"INFO: Git tool is valid: {version}", flush=True)
     except Exception as e:
         raise RuntimeError(
-            f"ERROR: Package-internal repo tool validation failed: {str(e)}\n"
-            "Reference: https://gerrit.googlesource.com/git-repo/\n"
-            "Resolution: Reinstall unirtos-cli package"
+            f"ERROR: Git tool validation failed: {str(e)}\n"
+            "Resolution: Install Git and ensure 'git' is available in PATH"
         )
+
+
+def _run_command_list(cmd_list, cwd=None, config=None):
+    """Run command as list (no shell interpolation issues)."""
+    env = os.environ.copy()
+
+    try:
+        result = subprocess.run(
+            cmd_list,
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            encoding=SYSTEM_ENCODING,
+            errors="replace",
+            env=env,
+            creationflags=0,
+        )
+        return result.stdout
+    except subprocess.CalledProcessError as e:
+        print(f"Command execution failed: {' '.join(cmd_list)}", flush=True)
+        print(f"Error message: {(e.stderr or '').strip()}", flush=True)
+        raise
+
+
+def _looks_like_commit(revision: str) -> bool:
+    return bool(re.fullmatch(r"[0-9a-fA-F]{7,40}", revision or ""))
+
+
+def _resolve_project_url(fetch: str, project_name: str) -> str:
+    """Resolve project git URL from manifest remote.fetch + project.name."""
+    fetch = (fetch or "").strip()
+    project_name = (project_name or "").strip()
+    if not fetch or not project_name:
+        raise RuntimeError(f"invalid manifest project url fields: fetch='{fetch}', name='{project_name}'")
+
+    # SCP-like git URL (git@host:org)
+    if fetch.startswith("git@"):
+        if fetch.endswith(":"):
+            return f"{fetch}{project_name}"
+        if fetch.endswith("/"):
+            host_path = fetch[:-1].replace(":", ":", 1)
+            if ":" in host_path:
+                host, path = host_path.split(":", 1)
+                return f"{host}:{path}/{project_name}"
+        if ":" in fetch:
+            return f"{fetch}/{project_name}"
+
+    parsed = urlparse(fetch)
+    if parsed.scheme:
+        if fetch.endswith("/"):
+            return f"{fetch}{project_name}"
+        return f"{fetch}/{project_name}"
+
+    # Local path style fetch (rare but supported)
+    return str((Path(fetch) / project_name).as_posix())
+
+
+def _collect_manifest_projects(manifest_root: Path, manifest_file: Path):
+    """
+    Parse repo-style manifest XML and return normalized project entries.
+    Supported tags: remote/default/project/include/remove-project.
+    """
+    remotes = {}
+    default_remote = None
+    default_revision = "master"
+    projects = []
+    visited = set()
+
+    def _parse_file(path: Path):
+        nonlocal default_remote, default_revision
+        path = path.resolve()
+        if path in visited:
+            return
+        visited.add(path)
+
+        if not path.exists():
+            raise RuntimeError(f"Manifest file not found: {path}")
+
+        tree = ET.parse(path)
+        root = tree.getroot()
+        if root.tag != "manifest":
+            raise RuntimeError(f"Invalid manifest root in {path}, expected <manifest>")
+
+        # First pass: remotes/default/include
+        for elem in root:
+            if elem.tag == "remote":
+                name = elem.attrib.get("name", "").strip()
+                fetch = elem.attrib.get("fetch", "").strip()
+                if name:
+                    remotes[name] = {
+                        "fetch": fetch,
+                        "revision": elem.attrib.get("revision", "").strip(),
+                    }
+            elif elem.tag == "default":
+                if elem.attrib.get("remote", "").strip():
+                    default_remote = elem.attrib.get("remote", "").strip()
+                if elem.attrib.get("revision", "").strip():
+                    default_revision = elem.attrib.get("revision", "").strip()
+            elif elem.tag == "include":
+                include_name = elem.attrib.get("name", "").strip()
+                if include_name:
+                    _parse_file((path.parent / include_name).resolve())
+
+        # Second pass: projects and remove-project
+        for elem in root:
+            if elem.tag == "project":
+                proj_name = elem.attrib.get("name", "").strip()
+                if not proj_name:
+                    continue
+                proj_path = elem.attrib.get("path", proj_name).strip()
+                proj_remote = elem.attrib.get("remote", "").strip() or default_remote
+                proj_revision = elem.attrib.get("revision", "").strip() or default_revision
+                proj_depth = elem.attrib.get("clone-depth", "").strip()
+                projects.append(
+                    {
+                        "name": proj_name,
+                        "path": proj_path,
+                        "remote": proj_remote,
+                        "revision": proj_revision,
+                        "clone_depth": proj_depth,
+                    }
+                )
+            elif elem.tag == "remove-project":
+                remove_name = elem.attrib.get("name", "").strip()
+                if remove_name:
+                    projects[:] = [p for p in projects if p.get("name") != remove_name]
+
+    _parse_file(manifest_file)
+
+    normalized = []
+    for p in projects:
+        remote_name = p.get("remote", "")
+        if remote_name not in remotes:
+            raise RuntimeError(f"Manifest project '{p['name']}' references unknown remote '{remote_name}'")
+        fetch = remotes[remote_name].get("fetch", "")
+        revision = p.get("revision", "") or remotes[remote_name].get("revision", "") or default_revision
+        normalized.append(
+            {
+                "name": p["name"],
+                "path": p["path"],
+                "url": _resolve_project_url(fetch, p["name"]),
+                "revision": revision,
+                "clone_depth": p.get("clone_depth", ""),
+            }
+        )
+
+    return normalized
+
+
+def _checkout_revision(repo_dir: Path, revision: str, config: dict):
+    revision = (revision or "").strip()
+    if not revision:
+        return
+
+    if revision.startswith("refs/heads/"):
+        branch = revision.split("refs/heads/", 1)[1]
+        _run_command_list(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir, config=config)
+        return
+
+    if revision.startswith("refs/tags/"):
+        tag = revision.split("refs/tags/", 1)[1]
+        _run_command_list(["git", "checkout", tag], cwd=repo_dir, config=config)
+        return
+
+    if _looks_like_commit(revision):
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config)
+        return
+
+    # Generic branch/tag name fallback
+    try:
+        _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir, config=config)
+    except Exception:
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config)
+
+
+def _sync_projects_from_manifest(manifest_root: Path, manifest_file: Path, work_root: Path, config: dict, context: str):
+    projects = _collect_manifest_projects(manifest_root, manifest_file)
+    if not projects:
+        print(f"WARNING: No projects declared in manifest: {manifest_file}", flush=True)
+        return
+
+    print(f"INFO: Syncing {len(projects)} projects for {context} from manifest: {manifest_file}", flush=True)
+    for idx, project in enumerate(projects, start=1):
+        project_path = work_root / project["path"]
+        project_path.parent.mkdir(parents=True, exist_ok=True)
+
+        print(f"[{idx}/{len(projects)}] {project['name']} -> {project['path']}", flush=True)
+
+        if (project_path / ".git").exists():
+            _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config)
+        else:
+            clone_cmd = ["git", "clone"]
+            clone_depth = project.get("clone_depth", "")
+            if clone_depth.isdigit() and int(clone_depth) > 0:
+                clone_cmd.extend(["--depth", clone_depth])
+            clone_cmd.extend([project["url"], str(project_path)])
+            _run_command_list(clone_cmd, cwd=work_root, config=config)
+
+        _checkout_revision(project_path, project.get("revision", ""), config)
+
 
 def load_config(config_path):
     """
@@ -258,7 +445,7 @@ def check_sdk_version(config):
 def pull_sdk(config):
     """
     Pull/update specified version of SDK (based on single Master branch + version directory XML structure).
-    Uses script-local repo tool.
+    Uses manifest XML + git sync.
     
     Args:
         config (dict): Environment configuration dictionary
@@ -301,18 +488,14 @@ def pull_sdk(config):
     if not manifest_file.exists():
         raise RuntimeError(f"Not found in SDK Manifest repository Master branch: {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
     
-    # Initialize and sync SDK code (use script-local repo)
-    repo_cache = unirtos_root / "cache" / "sdk"
-    repo_cache.mkdir(parents=True, exist_ok=True)
-    
-    run_command(
-        f"repo init -u {sdk_manifest_root} -m v{sdk_version}/default.xml",
-        cwd=sdk_code_dir,
-        config=config
-    )
-    
     print(f"Syncing SDK v{sdk_version} source code...", flush=True)
-    run_command("repo sync -j4 --force-sync", cwd=sdk_code_dir, config=config)
+    _sync_projects_from_manifest(
+        manifest_root=sdk_manifest_root,
+        manifest_file=manifest_file,
+        work_root=sdk_code_dir,
+        config=config,
+        context=f"SDK v{sdk_version}",
+    )
     
     # Write version identifier file
     with open(sdk_code_dir / "version.txt", "w") as f:
@@ -382,7 +565,7 @@ def prepare_lib_manifest_repo(config, unirtos_root):
 def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     """
     Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
-    Uses script-local repo tool (optimized: no duplicate manifest repo clone/update)
+    Uses manifest XML + git sync (optimized: no duplicate manifest repo clone/update)
     
     Args:
         lib_config (dict): Single library configuration dictionary
@@ -410,18 +593,14 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     if not manifest_file.exists():
         raise RuntimeError(f"Not found in component Manifest repository Master branch: {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
     
-    # Initialize and sync library code (use script-local repo)
-    repo_cache = unirtos_root / "cache" / "libraries"
-    repo_cache.mkdir(parents=True, exist_ok=True)
-    
-    run_command(
-        f"repo init -u {lib_manifest_root} -m {lib_name}/v{lib_version}/default.xml",
-        cwd=lib_code_dir,
-        config=config
-    )
-    
     print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
-    run_command("repo sync -j4 --force-sync", cwd=lib_code_dir, config=config)
+    _sync_projects_from_manifest(
+        manifest_root=lib_manifest_root,
+        manifest_file=manifest_file,
+        work_root=lib_code_dir,
+        config=config,
+        context=f"library {lib_name} v{lib_version}",
+    )
     
     # Write version identifier file
     with open(lib_code_dir / "version.txt", "w") as f:
@@ -463,7 +642,7 @@ def main():
     Unirtos environment initialization main process (local application version)
     Process Description:
     1. Parse command-line arguments and load configuration file
-    2. Pre-check (script-local repo tool)
+    2. Pre-check (git tool)
     3. Check/pull specified version of SDK
     4. Batch process dependent libraries
     5. Output environment initialization result information
@@ -475,14 +654,9 @@ def main():
         unirtos_root = get_unirtos_root(config)
         print(f"Unirtos common storage directory: {unirtos_root}", flush=True)
         
-        # Pre-check (validate script-local repo tool)
-        check_repo_installed(config)
+        # Pre-check (validate git tool)
+        check_git_installed(config)
 
-        # Print custom repo URL
-        repo_url = config.get('repo_url', '').strip()
-        if repo_url:
-            print(f"INFO: Using custom repo URL: {repo_url}", flush=True)
-        
         # Process SDK
         print("\n===== Check/Pull SDK =====", flush=True)
         if not check_sdk_version(config):

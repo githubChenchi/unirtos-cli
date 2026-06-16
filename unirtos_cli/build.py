@@ -159,16 +159,25 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     sdk_path = resolve_sdk_path(config)
     build_profile = resolve_sdk_build_profile(config, args)
 
-    sdk_build_sh = sdk_path / "build.sh"
-    if not sdk_build_sh.exists():
-        raise RuntimeError(f"SDK build entry not found: {sdk_build_sh}")
+    # unirtos is the global command provided by the cross-compilation toolchain.
+    # It must be executed from the SDK root directory.
+    import shutil
+    if not shutil.which("unirtos"):
+        raise RuntimeError(
+            "Global 'unirtos' command not found in PATH.\n"
+            "Ensure the UniRTOS cross-compilation toolchain is installed and added to PATH."
+        )
 
     cmd = [
-        str(sdk_build_sh),
+        "unirtos",
         "make",
+        "--project",
         build_profile["project"],
+        "--version",
         build_profile["version"],
+        "--type",
         build_profile["type"],
+        "--operation",
         build_profile["operation"],
         "--jobs",
         str(build_profile["jobs"]),
@@ -177,15 +186,16 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     run_env = os.environ.copy()
     run_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(app_root)
     run_env["UNIRTOS_EXTERNAL_APP_NAME"] = app_root.name
-    
+
     # Target name follows resolved version priority: CLI --version > env build.version > application.
     target_name = build_profile["version"]
     run_env["UNIRTOS_APP_TARGET_NAME"] = target_name
 
-    print("\nINFO: Build Mode: SDK-driven (build.sh)")
+    print("\nINFO: Build Mode: SDK-driven (unirtos make)")
+    print(f"INFO: SDK root: {sdk_path}")
     print(f"INFO: External app directory: {app_root}")
     print(f"INFO: SDK build profile: {build_profile}")
-    print(f"INFO: Executing SDK build command: {' '.join(cmd)}")
+    print(f"INFO: Executing build command: {' '.join(cmd)}")
 
     try:
         completed = subprocess.run(
@@ -204,7 +214,7 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
         if output:
             print(output, end="")
         raise RuntimeError(
-            "SDK build.sh execution failed.\n"
+            "'unirtos make' execution failed.\n"
             "Common Causes:\n"
             "1. build.module/version in env_config.json are invalid\n"
             "2. SDK CMake does not include external app injection logic\n"

@@ -14,6 +14,11 @@ add_apps_libraries($<TARGET_FILE:${target}>)
 add_library(${target} STATIC)
 set_target_properties(${target} PROPERTIES ARCHIVE_OUTPUT_DIRECTORY ${out_unir_lib_dir})
 
+# Allow nested user components in common conventions.
+add_subdirectory_if_exist(components)
+add_subdirectory_if_exist(modules)
+add_subdirectory_if_exist(libs)
+
 # SDK global include roots are exposed through SOURCE_TOP_DIR in SDK CMake.
 target_include_directories(${target} PRIVATE ${SOURCE_TOP_DIR})
 target_include_directories(${target} PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/main/include)

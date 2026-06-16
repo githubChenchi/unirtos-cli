@@ -188,10 +188,20 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     run_env = os.environ.copy()
     run_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(app_root)
     run_env["UNIRTOS_EXTERNAL_APP_NAME"] = app_root.name
+    run_env["UNIRTOS_ROOT"] = str(env.get_unirtos_root(config))
 
     # Target name follows resolved version priority: CLI --version > env build.version > application.
     target_name = build_profile["version"]
     run_env["UNIRTOS_APP_TARGET_NAME"] = target_name
+    
+    # Library support: extract library list from config and pass as JSON environment variable
+    libraries_config = config.get("libraries", {})
+    if isinstance(libraries_config, dict) and "list" in libraries_config:
+        import json as json_module
+        libraries_list = libraries_config.get("list", [])
+        if libraries_list:
+            run_env["UNIRTOS_LIBRARIES_JSON"] = json_module.dumps(libraries_list)
+            print(f"INFO: Found {len(libraries_list)} libraries to build: {[lib.get('name') for lib in libraries_list]}")
 
     print("\nINFO: Build Mode: SDK-driven (unirtos make)")
     print(f"INFO: SDK root: {sdk_path}")

@@ -2,3 +2,4 @@ build
 dist
 unirtos-cli.spec
 *.egg-info
+.DS_Store

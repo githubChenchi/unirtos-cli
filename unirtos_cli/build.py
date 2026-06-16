@@ -89,7 +89,7 @@ def load_unirtos_config() -> dict:
         raise RuntimeError(f"Configuration load failed: {str(e)}")
 
 def resolve_sdk_path(config: dict) -> Path:
-    """Resolve installed SDK path and auto-pull when missing."""
+    """Resolve installed SDK path without pulling; env-setup owns sync/pull."""
     unirtos_root = env.get_unirtos_root(config)
     sdk_version = config["sdk"]["version"]
     sdk_path = unirtos_root / "sdk" / f"v{sdk_version}"
@@ -99,9 +99,11 @@ def resolve_sdk_path(config: dict) -> Path:
     print("=========================================\n")
     print(f"INFO: Unirtos root directory: {unirtos_root}")
 
-    if not env.check_sdk_version(config):
-        print(f"INFO: SDK v{sdk_version} not found - initiating download...")
-        env.pull_sdk(config)
+    if not sdk_path.exists():
+        raise RuntimeError(
+            f"SDK v{sdk_version} not found at: {sdk_path}\n"
+            "Please run 'unirtos-cli env-setup' first to pull and prepare SDK."
+        )
 
     print(f"INFO: SDK v{sdk_version} path: {sdk_path}")
     return sdk_path

@@ -155,8 +155,36 @@ def run_command(cmd, cwd=None, check=True, config=None):
         CalledProcessError: When command execution fails
     """
     env = os.environ.copy()
+
+    stream_git_progress = bool(re.search(r"\bgit\s+(clone|pull|fetch|checkout)\b", cmd))
     
     try:
+        if stream_git_progress:
+            process = subprocess.Popen(
+                cmd,
+                cwd=cwd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                encoding=SYSTEM_ENCODING,
+                errors="replace",
+                env=env,
+                creationflags=0,
+                bufsize=1,
+            )
+
+            output_lines = []
+            if process.stdout is not None:
+                for line in process.stdout:
+                    output_lines.append(line)
+                    print(line, end="", flush=True)
+
+            return_code = process.wait()
+            output = "".join(output_lines)
+            if check and return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd, output=output, stderr="")
+            return output
+
         result = subprocess.run(
             cmd,
             cwd=cwd,
@@ -198,8 +226,38 @@ def check_git_installed(config):
 def _run_command_list(cmd_list, cwd=None, config=None):
     """Run command as list (no shell interpolation issues)."""
     env = os.environ.copy()
+    stream_git_progress = (
+        len(cmd_list) >= 2
+        and cmd_list[0] == "git"
+        and cmd_list[1] in {"clone", "pull", "fetch", "checkout"}
+    )
 
     try:
+        if stream_git_progress:
+            process = subprocess.Popen(
+                cmd_list,
+                cwd=cwd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                encoding=SYSTEM_ENCODING,
+                errors="replace",
+                env=env,
+                creationflags=0,
+                bufsize=1,
+            )
+
+            output_lines = []
+            if process.stdout is not None:
+                for line in process.stdout:
+                    output_lines.append(line)
+                    print(line, end="", flush=True)
+
+            return_code = process.wait()
+            output = "".join(output_lines)
+            if return_code != 0:
+                raise subprocess.CalledProcessError(return_code, cmd_list, output=output, stderr="")
+            return output
+
         result = subprocess.run(
             cmd_list,
             cwd=cwd,

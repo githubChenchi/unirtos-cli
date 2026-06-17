@@ -210,21 +210,29 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     print(f"INFO: Executing build command: {' '.join(cmd)}")
 
     try:
-        completed = subprocess.run(
+        # Stream compiler output line-by-line so users can see build progress in real time.
+        process = subprocess.Popen(
             cmd,
             cwd=sdk_path,
             env=run_env,
-            check=True,
-            encoding="utf-8",
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
         )
-        if completed.stdout:
-            print(completed.stdout, end="")
-    except subprocess.CalledProcessError as e:
-        output = e.stdout or ""
-        if output:
-            print(output, end="")
+
+        if process.stdout is not None:
+            for line in process.stdout:
+                print(line, end="", flush=True)
+
+        return_code = process.wait()
+        if return_code != 0:
+            raise RuntimeError("unirtos_make_failed")
+    except RuntimeError as e:
+        if str(e) != "unirtos_make_failed":
+            raise
         raise RuntimeError(
             "'unirtos make' execution failed.\n"
             "Common Causes:\n"

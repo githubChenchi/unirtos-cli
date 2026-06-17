@@ -31,20 +31,20 @@ pip3 install --force-reinstall dist/unirtos_cli-1.0.0-py3-none-any.whl
 unirtos-cli version
 ```
 
-## 上传到测试版 PyPI
+## 上传到 PyPI
 
 ### 上传分发包
 
 > 先注册 PyPI 账号，并获取 API Token
 
 ```bash
-twine upload --repository testpypi dist/*
+twine upload --repository pypi dist/*
 ```
 
 ### 安装 unirtos-cli
 
 ```bash
-pip install -i https://test.pypi.org/simple/ --upgrade unirtos-cli==1.0.0
+pip install --upgrade unirtos-cli==1.0.0
 ```
 
 ### 验证 unirtos-cli 命令行工具

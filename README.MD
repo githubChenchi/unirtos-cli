@@ -16,14 +16,14 @@ python3 -m build
 
 构建完成后，根目录会生成 dist/ 文件夹，包含：
 
-- unirtos_cli-0.1.8.tar.gz（源码包）
-- unirtos_cli-0.1.8-py3-none-any.whl（wheel 包，跨平台通用）
+- unirtos_cli-1.0.0.tar.gz（源码包）
+- unirtos_cli-1.0.0-py3-none-any.whl（wheel 包，跨平台通用）
 
 ## 本地验证
 
 ### 安装 wheel 包
 ```bash
-pip3 install --force-reinstall dist/unirtos_cli-0.1.8-py3-none-any.whl
+pip3 install --force-reinstall dist/unirtos_cli-1.0.0-py3-none-any.whl
 ```
 
 ### 验证 unirtos-cli 命令行工具
@@ -44,7 +44,7 @@ twine upload --repository testpypi dist/*
 ### 安装 unirtos-cli
 
 ```bash
-pip install -i https://test.pypi.org/simple/ --upgrade unirtos-cli==0.1.8
+pip install -i https://test.pypi.org/simple/ --upgrade unirtos-cli==1.0.0
 ```
 
 ### 验证 unirtos-cli 命令行工具

@@ -32,8 +32,8 @@ PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
 TOOLS_DIR_NAME = "tools"
 REPO_FILE_NAME = "repo"
-OFFICIAL_SDK_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-sdk-manifests.git"
-OFFICIAL_LIB_MANIFEST_REPO_URL = "https://github.com/githubChenchi/unirtos-libs-manifests.git"
+OFFICIAL_SDK_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-sdk-manifests.git"
+OFFICIAL_LIB_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-libs-manifests.git"
 
 SYSTEM_ENCODING = "gbk" if platform.system() == "Windows" else "utf-8"
 

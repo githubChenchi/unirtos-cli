@@ -453,6 +453,51 @@ def _sync_projects_from_manifest(manifest_root: Path, manifest_file: Path, work_
         _checkout_revision(project_path, project.get("revision", ""), config)
 
 
+def _try_pull_branch_with_fallback(repo_dir: Path, config: dict, specified_branch: str = ""):
+    """
+    Pull from specified branch, or fallback from main to master if no branch specified.
+    
+    Args:
+        repo_dir (Path): Repository directory
+        config (dict): Environment configuration
+        specified_branch (str): Branch to pull from. If empty, tries main first, then master.
+    
+    Raises:
+        RuntimeError: When pull attempts fail
+    """
+    if specified_branch and specified_branch.strip():
+        # User specified a branch, use it
+        specified_branch = specified_branch.strip()
+        try:
+            print(f"Attempting to pull from specified branch '{specified_branch}'...", flush=True)
+            run_command(f"git pull origin {specified_branch}", cwd=repo_dir, config=config)
+            print(f"Successfully pulled from branch '{specified_branch}'", flush=True)
+            return
+        except Exception as err:
+            raise RuntimeError(f"Failed to pull from specified branch '{specified_branch}': {str(err)}")
+    
+    # No branch specified, try main first, fallback to master
+    try:
+        print(f"Attempting to pull from 'main' branch...", flush=True)
+        run_command("git pull origin main", cwd=repo_dir, config=config)
+        print(f"Successfully pulled from 'main' branch", flush=True)
+        return
+    except Exception as main_err:
+        print(f"INFO: Main branch pull failed, retrying with 'master' branch...", flush=True)
+    
+    # Fallback to master branch
+    try:
+        print(f"Attempting to pull from 'master' branch...", flush=True)
+        run_command("git pull origin master", cwd=repo_dir, config=config)
+        print(f"Successfully pulled from 'master' branch", flush=True)
+        return
+    except Exception as master_err:
+        raise RuntimeError(
+            f"Failed to pull from both 'main' and 'master' branches.\n"
+            f"Main error: {str(main_err)}\n"
+            f"Master error: {str(master_err)}"
+        )
+
 def load_config(config_path):
     """
     Load JSON-formatted environment configuration file.
@@ -529,17 +574,18 @@ def pull_sdk(config):
     sdk_manifest_root.mkdir(parents=True, exist_ok=True)
     sdk_code_dir.mkdir(parents=True, exist_ok=True)
     
-    # Clone/update Master branch
+    # Clone/update manifest (try main first, fallback to master)
     if not (sdk_manifest_root / ".git").exists():
-        print(f"Cloning SDK Manifest repository (Master) to: {sdk_manifest_root}", flush=True)
+        print(f"Cloning SDK Manifest repository to: {sdk_manifest_root}", flush=True)
         run_command(
             f"git clone {sdk_manifest_url} {sdk_manifest_root}",
             cwd=sdk_manifest_root.parent,
             config=config
         )
     else:
-        print(f"Updating SDK Manifest repository (Master) to latest version", flush=True)
-        run_command("git pull origin master", cwd=sdk_manifest_root, config=config)
+        print(f"Updating SDK Manifest repository to latest version", flush=True)
+        branch = sdk_config.get("manifest_repo_branch", "").strip()
+        _try_pull_branch_with_fallback(sdk_manifest_root, config, specified_branch=branch)
     
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"
@@ -605,17 +651,18 @@ def prepare_lib_manifest_repo(config, unirtos_root):
     # Ensure parent directory exists
     lib_manifest_root.mkdir(parents=True, exist_ok=True)
     
-    # Clone or update manifest repo (only once)
+    # Clone or update manifest repo (only once, try main first, fallback to master)
     if not (lib_manifest_root / ".git").exists():
-        print(f"\n--- Cloning Library Manifest repository (Master) to: {lib_manifest_root} ---", flush=True)
+        print(f"\n--- Cloning Library Manifest repository to: {lib_manifest_root} ---", flush=True)
         run_command(
             f"git clone {lib_manifest_url} {lib_manifest_root}",
             cwd=lib_manifest_root.parent,
             config=config
         )
     else:
-        print(f"\n===== Updating Library Manifest repository (Master) to latest version =====", flush=True)
-        run_command("git pull origin master", cwd=lib_manifest_root, config=config)
+        print(f"\n===== Updating Library Manifest repository to latest version =====", flush=True)
+        branch = config["libraries"].get("manifest_repo_branch", "").strip()
+        _try_pull_branch_with_fallback(lib_manifest_root, config, specified_branch=branch)
     
     print(f"INFO: Library Manifest repo preparation completed: {lib_manifest_root}", flush=True)
     return lib_manifest_root

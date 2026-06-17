@@ -260,12 +260,12 @@ def main() -> None:
         print("INFO: Loading environment configuration (env_config.json)...")
         config = load_unirtos_config()
 
-        # Validate repo tool availability (optional in SDK-driven mode)
-        print("INFO: Validating repo tool integrity (optional)...")
+        # Validate git availability (optional in SDK-driven mode)
+        print("INFO: Validating git tool integrity (optional)...")
         try:
-            env.check_repo_installed(config)
-        except Exception as repo_err:
-            print(f"WARNING: Repo tool validation skipped: {repo_err}")
+            env.check_git_installed(config)
+        except Exception as git_err:
+            print(f"WARNING: Git tool validation skipped: {git_err}")
 
         # Execute SDK-driven build process
         run_sdk_build(config, args)

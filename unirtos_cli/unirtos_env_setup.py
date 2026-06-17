@@ -547,7 +547,7 @@ def check_sdk_version(config):
 
 def pull_sdk(config):
     """
-    Pull/update specified version of SDK (based on single Master branch + version directory XML structure).
+    Pull/update specified version of SDK (manifest repository supports branch fallback: configured branch > main > master).
     Uses manifest XML + git sync.
     
     Args:
@@ -590,7 +590,7 @@ def pull_sdk(config):
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"
     if not manifest_file.exists():
-        raise RuntimeError(f"Not found in SDK Manifest repository Master branch: {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
+        raise RuntimeError(f"Not found in SDK Manifest repository (main or master branch): {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside)")
     
     print(f"Syncing SDK v{sdk_version} source code...", flush=True)
     _sync_projects_from_manifest(
@@ -669,7 +669,7 @@ def prepare_lib_manifest_repo(config, unirtos_root):
 
 def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     """
-    Pull/update specified version of dependent library (based on single Master branch + component-version directory XML structure).
+    Pull/update specified version of dependent library (manifest repository supports branch fallback: configured branch > main > master).
     Uses manifest XML + git sync (optimized: no duplicate manifest repo clone/update)
     
     Args:
@@ -696,7 +696,7 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     # Verify existence of default.xml in component-version directory
     manifest_file = lib_manifest_dir / "default.xml"
     if not manifest_file.exists():
-        raise RuntimeError(f"Not found in component Manifest repository Master branch: {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
+        raise RuntimeError(f"Not found in component Manifest repository (main or master branch): {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside)")
     
     print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
     _sync_projects_from_manifest(

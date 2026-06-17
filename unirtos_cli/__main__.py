@@ -37,7 +37,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.1"
+DEV_VERSION = "1.0.2"
 UPDATE_INTERVAL = 3600
 
 # ===================== Core Utility Functions =====================
@@ -196,20 +196,28 @@ def get_last_git_update_time(repo_dir: Path) -> float:
     if fetch_head.exists():
         return os.path.getmtime(fetch_head)
 
-    refs_head = repo_dir / ".git" / "refs" / "heads" / "master"
-    if refs_head.exists():
-        return os.path.getmtime(refs_head)
+    # Fallback: check main branch, then master branch
+    refs_main = repo_dir / ".git" / "refs" / "heads" / "main"
+    if refs_main.exists():
+        return os.path.getmtime(refs_main)
+    
+    refs_master = repo_dir / ".git" / "refs" / "heads" / "master"
+    if refs_master.exists():
+        return os.path.getmtime(refs_master)
+    
     return 0.0
 
-def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False) -> None:
+def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "") -> None:
     """
     Clone or update manifest repository (reuse run_command from unirtos_env_setup).
+    Supports branch fallback: specified_branch > main > master
     
     Args:
         repo_url: Remote URL of manifest repository
         target_dir: Local directory to store manifest repository
         config: Environment configuration dictionary (optional)
         force: Whether to force the execution of git pull (ignore time judgment)
+        specified_branch: Branch to pull from. If empty, tries main first, then master.
     
     Raises:
         RuntimeError: If git clone/pull fails
@@ -227,8 +235,33 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
         time_diff = current_time - last_update_time
         
         if force or time_diff > UPDATE_INTERVAL:
-            # Forced update or more than 1 hour has elapsed: execute git pull
-            env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
+            # Forced update or more than 1 hour has elapsed: execute git pull with branch fallback
+            if specified_branch and specified_branch.strip():
+                # User specified a branch
+                specified_branch = specified_branch.strip()
+                try:
+                    print(f"Attempting to pull from specified branch '{specified_branch}'...", flush=True)
+                    env_setup.run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config)
+                    print(f"Successfully pulled from branch '{specified_branch}'", flush=True)
+                except Exception as err:
+                    raise RuntimeError(f"Failed to pull from specified branch '{specified_branch}': {str(err)}")
+            else:
+                # No branch specified, try main first, fallback to master
+                try:
+                    print(f"Attempting to pull from 'main' branch...", flush=True)
+                    env_setup.run_command("git pull origin main", cwd=target_dir, config=config)
+                    print(f"Successfully pulled from 'main' branch", flush=True)
+                except Exception as main_err:
+                    try:
+                        print(f"INFO: Main branch pull failed, retrying with 'master' branch...", flush=True)
+                        env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
+                        print(f"Successfully pulled from 'master' branch", flush=True)
+                    except Exception as master_err:
+                        raise RuntimeError(
+                            f"Failed to pull from both 'main' and 'master' branches.\n"
+                            f"Main error: {str(main_err)}\n"
+                            f"Master error: {str(master_err)}"
+                        )
         else:
             # Not timed out and not forced: skip pull
             pass
@@ -297,8 +330,13 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
     
+    # Get branch from config if specified
+    branch = ""
+    if config and "sdk" in config:
+        branch = config["sdk"].get("manifest_repo_branch", "").strip()
+    
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force)
+    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force, specified_branch=branch)
     
     # Read version directories
     versions = []
@@ -323,8 +361,13 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
     
+    # Get branch from config if specified
+    branch = ""
+    if config and "libraries" in config:
+        branch = config["libraries"].get("manifest_repo_branch", "").strip()
+    
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force)
+    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force, specified_branch=branch)
     
     # Read library and version directories
     lib_versions = {}

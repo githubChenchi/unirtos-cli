@@ -37,7 +37,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.2"
+DEV_VERSION = "1.0.3"
 UPDATE_INTERVAL = 3600
 
 # ===================== Core Utility Functions =====================
@@ -207,7 +207,7 @@ def get_last_git_update_time(repo_dir: Path) -> float:
     
     return 0.0
 
-def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "") -> None:
+def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> None:
     """
     Clone or update manifest repository (reuse run_command from unirtos_env_setup).
     Supports branch fallback: specified_branch > main > master
@@ -218,6 +218,7 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
         config: Environment configuration dictionary (optional)
         force: Whether to force the execution of git pull (ignore time judgment)
         specified_branch: Branch to pull from. If empty, tries main first, then master.
+        silent: Whether to suppress logs. Default is False.
     
     Raises:
         RuntimeError: If git clone/pull fails
@@ -227,7 +228,7 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
     
     if not (target_dir / ".git").exists():
         # If the repository does not exist: execute git clone
-        env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config)
+        env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
     else:
         # If the repository exists: determine whether git pull is needed
         current_time = time.time()
@@ -240,22 +241,28 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
                 # User specified a branch
                 specified_branch = specified_branch.strip()
                 try:
-                    print(f"Attempting to pull from specified branch '{specified_branch}'...", flush=True)
-                    env_setup.run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config)
-                    print(f"Successfully pulled from branch '{specified_branch}'", flush=True)
+                    if not silent:
+                        print(f"Attempting to pull from specified branch '{specified_branch}'...", flush=True)
+                    env_setup.run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent)
+                    if not silent:
+                        print(f"Successfully pulled from branch '{specified_branch}'", flush=True)
                 except Exception as err:
                     raise RuntimeError(f"Failed to pull from specified branch '{specified_branch}': {str(err)}")
             else:
                 # No branch specified, try main first, fallback to master
                 try:
-                    print(f"Attempting to pull from 'main' branch...", flush=True)
-                    env_setup.run_command("git pull origin main", cwd=target_dir, config=config)
-                    print(f"Successfully pulled from 'main' branch", flush=True)
+                    if not silent:
+                        print(f"Attempting to pull from 'main' branch...", flush=True)
+                    env_setup.run_command("git pull origin main", cwd=target_dir, config=config, silent=silent)
+                    if not silent:
+                        print(f"Successfully pulled from 'main' branch", flush=True)
                 except Exception as main_err:
                     try:
-                        print(f"INFO: Main branch pull failed, retrying with 'master' branch...", flush=True)
-                        env_setup.run_command("git pull origin master", cwd=target_dir, config=config)
-                        print(f"Successfully pulled from 'master' branch", flush=True)
+                        if not silent:
+                            print(f"INFO: Main branch pull failed, retrying with 'master' branch...", flush=True)
+                        env_setup.run_command("git pull origin master", cwd=target_dir, config=config, silent=silent)
+                        if not silent:
+                            print(f"Successfully pulled from 'master' branch", flush=True)
                     except Exception as master_err:
                         raise RuntimeError(
                             f"Failed to pull from both 'main' and 'master' branches.\n"
@@ -315,7 +322,7 @@ def list_local_lib_versions(unirtos_root: Path) -> dict:
                     lib_versions[lib_dir.name] = sorted(versions)
     return lib_versions
 
-def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: bool = False) -> list:
+def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: bool = False, silent: bool = False) -> list:
     """
     List remote SDK versions from official manifest repository.
     
@@ -323,6 +330,7 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
         unirtos_root: Path to Unirtos root directory
         config: Environment configuration dictionary (optional)
         force: Whether to force update the manifest repository
+        silent: Whether to suppress logs during sync. Default is False.
     
     Returns:
         list: Sorted list of remote SDK versions
@@ -336,7 +344,7 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
         branch = config["sdk"].get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force, specified_branch=branch)
+    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force, specified_branch=branch, silent=silent)
     
     # Read version directories
     versions = []
@@ -346,7 +354,7 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
                 versions.append(item.name.lstrip("v"))
     return sorted(versions)
 
-def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: bool = False) -> dict:
+def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: bool = False, silent: bool = False) -> dict:
     """
     List remote library versions from official manifest repository.
     
@@ -354,6 +362,7 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
         unirtos_root: Path to Unirtos root directory
         config: Environment configuration dictionary (optional)
         force: Whether to force update the manifest repository
+        silent: Whether to suppress logs during sync. Default is False.
     
     Returns:
         dict: Dictionary of library names and their remote versions
@@ -367,7 +376,7 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
         branch = config["libraries"].get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force, specified_branch=branch)
+    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force, specified_branch=branch, silent=silent)
     
     # Read library and version directories
     lib_versions = {}
@@ -668,7 +677,7 @@ def handle_ls_sdk(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            versions = list_remote_sdk_versions(unirtos_root, config, args.force)
+            versions = list_remote_sdk_versions(unirtos_root, config, args.force, silent=args.json_output)
             output_data = {
                 "success": True,
                 "message": "Remote SDK versions fetched successfully",
@@ -714,7 +723,7 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            lib_versions = list_remote_lib_versions(unirtos_root, config, args.force)
+            lib_versions = list_remote_lib_versions(unirtos_root, config, args.force, silent=args.json_output)
             output_data = {
                 "success": True,
                 "message": "Remote library versions fetched successfully",

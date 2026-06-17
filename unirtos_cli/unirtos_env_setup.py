@@ -138,7 +138,7 @@ def get_unirtos_root(config):
 
     return Path.home().expanduser().absolute() / ".unirtos"
 
-def run_command(cmd, cwd=None, check=True, config=None):
+def run_command(cmd, cwd=None, check=True, config=None, silent=False):
     """
     Cross-platform execution of shell commands.
 	
@@ -147,6 +147,7 @@ def run_command(cmd, cwd=None, check=True, config=None):
         cwd (Path, optional): Working directory for command execution
         check (bool, optional): Whether to check command execution result
         config (dict, optional): Env config dict
+        silent (bool, optional): Whether to suppress output. Default is False.
     
     Returns:
         str: Standard output content of command execution
@@ -177,7 +178,8 @@ def run_command(cmd, cwd=None, check=True, config=None):
             if process.stdout is not None:
                 for line in process.stdout:
                     output_lines.append(line)
-                    print(line, end="", flush=True)
+                    if not silent:
+                        print(line, end="", flush=True)
 
             return_code = process.wait()
             output = "".join(output_lines)
@@ -199,8 +201,9 @@ def run_command(cmd, cwd=None, check=True, config=None):
         )
         return result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"Command execution failed: {cmd}", flush=True)
-        print(f"Error message: {e.stderr.strip()}", flush=True)
+        if not silent:
+            print(f"Command execution failed: {cmd}", flush=True)
+            print(f"Error message: {e.stderr.strip()}", flush=True)
         raise
 
 def check_git_installed(config):

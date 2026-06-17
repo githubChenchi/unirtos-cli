@@ -44,7 +44,7 @@ twine upload --repository testpypi dist/*
 ### 安装 unirtos-cli
 
 ```bash
-pip install -i https://test.pypi.org/simple/ --upgrade unirtos-cli
+pip install -i https://test.pypi.org/simple/ --upgrade unirtos-cli==0.1.8
 ```
 
 ### 验证 unirtos-cli 命令行工具

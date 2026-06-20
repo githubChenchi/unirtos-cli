@@ -639,7 +639,7 @@ def handle_clean(args: argparse.Namespace) -> None:
 
 def handle_menuconfig(args: argparse.Namespace) -> None:
     """
-    Open Unirtos menuconfig in unirtos_root.
+    Open Unirtos menuconfig in SDK root (~/.unirtos/sdk/v<version>).
 
     Args:
         args: Parsed command-line arguments (project_dir)
@@ -649,17 +649,31 @@ def handle_menuconfig(args: argparse.Namespace) -> None:
     """
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
     config_file = project_dir / CONFIG_FILE_NAME
-    unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+    if not config_file.exists():
+        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
 
-    if not unirtos_root.exists():
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    sdk_version = str(config.get("sdk", {}).get("version", "")).strip()
+    if not sdk_version:
         raise RuntimeError(
-            f"ERROR: Unirtos root directory not found: {unirtos_root}\n"
-            f"Resolution: Run 'unirtos-cli env-setup' first or set 'unirtos_root' in {CONFIG_FILE_NAME}."
+            f"ERROR: 'sdk.version' is missing in {config_file}.\n"
+            "Resolution: Set sdk.version in env_config.json first."
         )
 
-    print(f"INFO: Launching menuconfig in: {unirtos_root}")
+    unirtos_root = get_unirtos_root(config_file)
+    sdk_root = unirtos_root / "sdk" / f"v{sdk_version}"
+
+    if not sdk_root.exists():
+        raise RuntimeError(
+            f"ERROR: SDK root directory not found: {sdk_root}\n"
+            "Resolution: Run 'unirtos-cli env-setup' first to pull the specified SDK version."
+        )
+
+    print(f"INFO: Launching menuconfig in SDK root: {sdk_root}")
     try:
-        subprocess.run(["unirtos", "menuconfig"], cwd=unirtos_root, check=True)
+        subprocess.run(["unirtos", "menuconfig"], cwd=sdk_root, check=True)
         print("SUCCESS: menuconfig exited normally.")
     except FileNotFoundError as e:
         raise RuntimeError(
@@ -906,7 +920,7 @@ Usage Examples:
     # Subcommand: menuconfig
     parser_menuconfig = subparsers.add_parser(
         "menuconfig",
-        help="Open Unirtos menuconfig in unirtos_root"
+        help="Open Unirtos menuconfig in SDK root (v<version>)"
     )
     parser_menuconfig.add_argument(
         "-d", "--project-dir",

@@ -434,6 +434,10 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
     if prefer_tag and version_tag:
         if _checkout_tag(repo_dir, version_tag, config):
             return
+        raise RuntimeError(
+            f"SDK tag not found: {version_tag}\n"
+            f"Resolution: Check 'sdk.version' in env_config.json and ensure git tag '{version_tag}' exists in the SDK repository."
+        )
 
     if not revision:
         return

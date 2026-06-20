@@ -283,6 +283,14 @@ def _looks_like_commit(revision: str) -> bool:
     return bool(re.fullmatch(r"[0-9a-fA-F]{7,40}", revision or ""))
 
 
+def _normalize_version_tag(version: str) -> str:
+    """Normalize a semantic version string to tag format (vX.Y.Z)."""
+    version = (version or "").strip()
+    if not version:
+        return ""
+    return version if version.startswith("v") else f"v{version}"
+
+
 def _resolve_project_url(fetch: str, project_name: str) -> str:
     """Resolve project git URL from manifest remote.fetch + project.name."""
     fetch = (fetch or "").strip()
@@ -404,8 +412,29 @@ def _collect_manifest_projects(manifest_root: Path, manifest_file: Path):
     return normalized
 
 
-def _checkout_revision(repo_dir: Path, revision: str, config: dict):
+def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
+    """Checkout a tag in detached HEAD mode. Returns True if successful."""
+    tag = (tag or "").strip()
+    if not tag:
+        return False
+
+    try:
+        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir, config=config)
+    except Exception:
+        return False
+
+    _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir, config=config)
+    return True
+
+
+def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: bool = False, version_tag: str = ""):
     revision = (revision or "").strip()
+    version_tag = (version_tag or "").strip()
+
+    if prefer_tag and version_tag:
+        if _checkout_tag(repo_dir, version_tag, config):
+            return
+
     if not revision:
         return
 
@@ -416,7 +445,9 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict):
 
     if revision.startswith("refs/tags/"):
         tag = revision.split("refs/tags/", 1)[1]
-        _run_command_list(["git", "checkout", tag], cwd=repo_dir, config=config)
+        if _checkout_tag(repo_dir, tag, config):
+            return
+        raise RuntimeError(f"Tag not found: {tag}")
         return
 
     if _looks_like_commit(revision):
@@ -424,13 +455,25 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict):
         return
 
     # Generic branch/tag name fallback
+    if prefer_tag:
+        if _checkout_tag(repo_dir, revision, config):
+            return
+
     try:
         _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir, config=config)
     except Exception:
         _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config)
 
 
-def _sync_projects_from_manifest(manifest_root: Path, manifest_file: Path, work_root: Path, config: dict, context: str):
+def _sync_projects_from_manifest(
+    manifest_root: Path,
+    manifest_file: Path,
+    work_root: Path,
+    config: dict,
+    context: str,
+    prefer_tag: bool = False,
+    version_tag: str = "",
+):
     projects = _collect_manifest_projects(manifest_root, manifest_file)
     if not projects:
         print(f"WARNING: No projects declared in manifest: {manifest_file}", flush=True)
@@ -453,7 +496,13 @@ def _sync_projects_from_manifest(manifest_root: Path, manifest_file: Path, work_
             clone_cmd.extend([project["url"], str(project_path)])
             _run_command_list(clone_cmd, cwd=work_root, config=config)
 
-        _checkout_revision(project_path, project.get("revision", ""), config)
+        _checkout_revision(
+            project_path,
+            project.get("revision", ""),
+            config,
+            prefer_tag=prefer_tag,
+            version_tag=version_tag,
+        )
 
 
 def _try_pull_branch_with_fallback(repo_dir: Path, config: dict, specified_branch: str = ""):
@@ -550,7 +599,8 @@ def check_sdk_version(config):
 
 def pull_sdk(config):
     """
-    Pull/update specified version of SDK (manifest repository supports branch fallback: configured branch > main > master).
+    Pull/update specified version of SDK.
+    SDK source checkout is tag-first based on sdk.version -> v{version}.
     Uses manifest XML + git sync.
     
     Args:
@@ -562,6 +612,7 @@ def pull_sdk(config):
     unirtos_root = get_unirtos_root(config)
     sdk_config = config["sdk"]
     sdk_version = sdk_config["version"]
+    sdk_tag = _normalize_version_tag(sdk_version)
 
     sdk_manifest_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
     print(f"INFO: Using SDK manifest repo URL: {sdk_manifest_url}", flush=True)
@@ -602,6 +653,8 @@ def pull_sdk(config):
         work_root=sdk_code_dir,
         config=config,
         context=f"SDK v{sdk_version}",
+        prefer_tag=True,
+        version_tag=sdk_tag,
     )
     
     # Write version identifier file

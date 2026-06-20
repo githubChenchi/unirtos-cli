@@ -7,6 +7,7 @@ Core Functionality:
   - Initialize empty directories with Unirtos templates (init)
   - Execute environment configuration (env-setup)
   - Build Unirtos project (build)
+  - Open Unirtos menuconfig (menuconfig)
   - Check CLI version (version)
   - List local/remote SDK versions (ls-sdk)
   - List local/remote library versions (ls-libs)
@@ -636,6 +637,40 @@ def handle_clean(args: argparse.Namespace) -> None:
     except Exception as e:
         raise RuntimeError(f"ERROR: Clean failed: {str(e)}") from e
 
+def handle_menuconfig(args: argparse.Namespace) -> None:
+    """
+    Open Unirtos menuconfig in unirtos_root.
+
+    Args:
+        args: Parsed command-line arguments (project_dir)
+
+    Raises:
+        RuntimeError: If menuconfig execution fails
+    """
+    project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+    config_file = project_dir / CONFIG_FILE_NAME
+    unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+
+    if not unirtos_root.exists():
+        raise RuntimeError(
+            f"ERROR: Unirtos root directory not found: {unirtos_root}\n"
+            f"Resolution: Run 'unirtos-cli env-setup' first or set 'unirtos_root' in {CONFIG_FILE_NAME}."
+        )
+
+    print(f"INFO: Launching menuconfig in: {unirtos_root}")
+    try:
+        subprocess.run(["unirtos", "menuconfig"], cwd=unirtos_root, check=True)
+        print("SUCCESS: menuconfig exited normally.")
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            "ERROR: 'unirtos' command not found.\n"
+            "Resolution: Install Unirtos toolchain and ensure 'unirtos' is in PATH."
+        ) from e
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"ERROR: menuconfig execution failed (exit code={e.returncode}).") from e
+    except Exception as e:
+        raise RuntimeError(f"ERROR: Failed to launch menuconfig: {str(e)}") from e
+
 def handle_version(args: argparse.Namespace) -> None:
     """
     Version information command.
@@ -772,15 +807,19 @@ Usage Examples:
      unirtos-cli build -d /path/to/project
   5. Build with custom parameters:
      unirtos-cli build --build-dir my-build --jobs 8
-  6. Check version:
+  6. Clean build artifacts:
+      unirtos-cli clean -d /path/to/project
+  7. Open menuconfig:
+      unirtos-cli menuconfig -d /path/to/project
+  8. Check version:
      unirtos-cli version
-  7. List local SDK versions (human-readable):
+  9. List local SDK versions (human-readable):
      unirtos-cli ls-sdk
-  8. List remote SDK versions (JSON output):
+  10. List remote SDK versions (JSON output):
      unirtos-cli ls-sdk -r -j
-  9. List remote SDK versions (force update manifest repo):
+  11. List remote SDK versions (force update manifest repo):
      unirtos-cli ls-sdk -r -f
-  10. List remote library versions (force update + JSON output):
+  12. List remote library versions (force update + JSON output):
       unirtos-cli ls-libs -r -f -j
         """
     )
@@ -803,7 +842,7 @@ Usage Examples:
         help="Initialize directory with Unirtos templates (empty dir) or validate files (non-empty dir)"
     )
     parser_init.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Target directory (default: current working directory)"
     )
@@ -814,7 +853,7 @@ Usage Examples:
         help="Execute Unirtos environment configuration (post-initialization)"
     )
     parser_env_setup.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Project directory (default: current working directory)"
     )
@@ -825,7 +864,7 @@ Usage Examples:
         help="Build Unirtos project (CMake + make compilation)"
     )
     parser_build.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Project directory (default: current working directory)"
     )
@@ -859,9 +898,20 @@ Usage Examples:
         help="Clean all build artifacts from app directory"
     )
     parser_clean.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Project directory (default: current working directory)"
+    )
+
+    # Subcommand: menuconfig
+    parser_menuconfig = subparsers.add_parser(
+        "menuconfig",
+        help="Open Unirtos menuconfig in unirtos_root"
+    )
+    parser_menuconfig.add_argument(
+        "-d", "--project-dir",
+        default=".",
+        help="Project directory (to read env_config.json, default: current working directory)"
     )
 
     # Subcommand: version (version information)
@@ -876,7 +926,7 @@ Usage Examples:
         help="List local/remote SDK versions"
     )
     parser_ls_sdk.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Project directory (to read env_config.json, default: current working directory)"
     )
@@ -909,7 +959,7 @@ Usage Examples:
         help="List local/remote library versions"
     )
     parser_ls_libs.add_argument(
-        "-d", "--project_dir",
+        "-d", "--project-dir",
         default=".",
         help="Project directory (to read env_config.json, default: current working directory)"
     )
@@ -953,6 +1003,7 @@ def main() -> None:
             "env-setup": handle_env_setup,
             "build": handle_build,
             "clean": handle_clean,
+            "menuconfig": handle_menuconfig,
             "version": handle_version,
             "ls-sdk": handle_ls_sdk,
             "ls-libs": handle_ls_libs

@@ -435,8 +435,8 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
         if _checkout_tag(repo_dir, version_tag, config):
             return
         raise RuntimeError(
-            f"SDK tag not found: {version_tag}\n"
-            f"Resolution: Check 'sdk.version' in env_config.json and ensure git tag '{version_tag}' exists in the SDK repository."
+            f"Tag not found: {version_tag}\n"
+            f"Resolution: Ensure git tag '{version_tag}' exists in the target repository."
         )
 
     if not revision:
@@ -648,7 +648,7 @@ def pull_sdk(config):
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"
     if not manifest_file.exists():
-        raise RuntimeError(f"Not found in SDK Manifest repository (main or master branch): {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside)")
+        raise RuntimeError(f"Not found in SDK Manifest repository (main or master branch): {manifest_file}\nPlease check if v{sdk_version} directory is created and default.xml is placed inside")
     
     print(f"Syncing SDK v{sdk_version} source code...", flush=True)
     _sync_projects_from_manifest(
@@ -742,6 +742,7 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     """
     lib_name = lib_config["name"]
     lib_version = lib_config["version"]
+    lib_tag = _normalize_version_tag(lib_version)
 
     print(f"INFO: Processing library {lib_name} v{lib_version}", flush=True)
     
@@ -756,7 +757,7 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
     # Verify existence of default.xml in component-version directory
     manifest_file = lib_manifest_dir / "default.xml"
     if not manifest_file.exists():
-        raise RuntimeError(f"Not found in component Manifest repository (main or master branch): {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside)")
+        raise RuntimeError(f"Not found in component Manifest repository (main or master branch): {manifest_file}\nPlease check if {lib_name}/{lib_version} directory is created and default.xml is placed inside")
     
     print(f"Syncing {lib_name} v{lib_version} source code...", flush=True)
     _sync_projects_from_manifest(
@@ -765,6 +766,8 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
         work_root=lib_code_dir,
         config=config,
         context=f"library {lib_name} v{lib_version}",
+        prefer_tag=True,
+        version_tag=lib_tag,
     )
     
     # Write version identifier file

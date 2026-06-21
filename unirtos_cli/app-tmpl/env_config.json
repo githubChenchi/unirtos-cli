@@ -14,5 +14,9 @@
     "list": [
 
     ]
+  },
+  "demos": {
+    "manifest_repo_url": "https://github.com/unirtos/unirtos-demos-manifests.git",
+    "manifest_repo_branch": ""
   }
 }

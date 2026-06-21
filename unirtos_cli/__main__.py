@@ -11,6 +11,7 @@ Core Functionality:
   - Check CLI version (version)
   - List local/remote SDK versions (ls-sdk)
   - List local/remote library versions (ls-libs)
+    - List demo versions from manifests (ls-demos)
 Copyright (c) Chavis.Chen 2026. All Rights Reserved.
 """
 
@@ -25,6 +26,7 @@ from pathlib import Path
 import argparse
 import importlib.resources as resources
 import importlib
+import re
 
 # ===================== Version Compatibility Handling =====================
 try:
@@ -40,6 +42,7 @@ PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
 DEV_VERSION = "1.0.5"
 UPDATE_INTERVAL = 3600
+OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
 # ===================== Core Utility Functions =====================
 def get_os_type() -> str:
@@ -183,6 +186,27 @@ def get_unirtos_root(config_path: Path = None) -> Path:
 
     return Path.home().expanduser().absolute() / ".unirtos"
 
+
+def find_env_config(start_dir: Path) -> Path:
+    """
+    Search upward from start_dir for env_config.json.
+
+    Args:
+        start_dir: Directory to start searching from
+
+    Returns:
+        Path: Path to env_config.json if found, otherwise None
+    """
+    current_dir = start_dir.absolute()
+    while True:
+        config_file = current_dir / CONFIG_FILE_NAME
+        if config_file.exists() and config_file.is_file():
+            return config_file
+
+        if current_dir.parent == current_dir:
+            return None
+        current_dir = current_dir.parent
+
 def get_last_git_update_time(repo_dir: Path) -> float:
     """
     Get the timestamp of the last update of the git repository (based on the modification time of the .git/FETCH_HEAD file)
@@ -273,6 +297,190 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
         else:
             # Not timed out and not forced: skip pull
             pass
+
+
+def _normalize_version_tag(version: str) -> str:
+    """Normalize a semantic version string to tag format (vX.Y.Z)."""
+    version = (version or "").strip()
+    if not version:
+        return ""
+    return version if version.startswith("v") else f"v{version}"
+
+
+def _strip_version_prefix(version: str) -> str:
+    """Strip leading 'v' from version folder/tag name for display/path usage."""
+    s = (version or "").strip()
+    return s[1:] if s.startswith("v") else s
+
+
+def _parse_version_key(version_name: str):
+    """Parse version folder names like v1.2.3 for sorting, fallback to lexical."""
+    s = (version_name or "").strip()
+    if s.startswith("v"):
+        s = s[1:]
+    parts = re.split(r"[._-]", s)
+    key = []
+    for p in parts:
+        if p.isdigit():
+            key.append((0, int(p)))
+        else:
+            key.append((1, p))
+    return key
+
+
+def _resolve_project_name(raw_name: str) -> str:
+    """Validate project name input and reject path-like values."""
+    name = (raw_name or "").strip()
+    if not name:
+        raise RuntimeError("ERROR: project-name cannot be empty")
+    if "/" in name or "\\" in name:
+        raise RuntimeError(
+            f"ERROR: project-name must be a plain name, not a path: '{name}'\n"
+            "Resolution: Use 'unirtos-cli new <project-name> -d <project-dir>' for custom location."
+        )
+    if name in {".", ".."}:
+        raise RuntimeError(f"ERROR: invalid project-name: '{name}'")
+    return name
+
+
+def _load_config_for_new(project_dir: Path) -> tuple:
+    """
+    Load config for 'new' flow from preferred locations.
+    Priority: <project-dir>/env_config.json -> <cwd>/env_config.json -> empty config.
+    """
+    candidates = [project_dir / CONFIG_FILE_NAME, Path.cwd() / CONFIG_FILE_NAME]
+    for cfg in candidates:
+        if cfg.exists():
+            with open(cfg, "r", encoding="utf-8") as f:
+                return json.load(f), cfg
+    return {}, None
+
+
+def _resolve_new_target_dir(project_name: str, project_dir: str) -> Path:
+    """Resolve target directory for new command from project-name and -d/--project-dir."""
+    base_dir = Path(project_dir).absolute() if project_dir else Path.cwd()
+    return base_dir / project_name
+
+
+def _select_demo_manifest_file(demo_manifest_root: Path, demo_name: str, requested_version: str = "") -> tuple:
+    """Pick demo manifest file under <demo>/<vX.Y.Z>/default.xml (specific or latest)."""
+    demo_root = demo_manifest_root / demo_name
+    if not demo_root.exists() or not demo_root.is_dir():
+        raise RuntimeError(f"Demo not found in manifests: {demo_name}")
+
+    version_dirs = []
+    for item in demo_root.iterdir():
+        if item.is_dir() and item.name.startswith("v") and (item / "default.xml").exists():
+            version_dirs.append(item)
+
+    if not version_dirs:
+        raise RuntimeError(f"No valid demo versions found for '{demo_name}' in {demo_root}")
+
+    if requested_version and requested_version.strip():
+        requested_tag = _normalize_version_tag(requested_version)
+        for version_dir in version_dirs:
+            if _normalize_version_tag(version_dir.name) == requested_tag:
+                return version_dir / "default.xml", version_dir.name
+
+        available_versions = sorted(_strip_version_prefix(v.name) for v in version_dirs)
+        raise RuntimeError(
+            f"Requested demo version not found: {requested_version}\n"
+            f"Available versions for '{demo_name}': {', '.join(available_versions)}"
+        )
+
+    version_dirs.sort(key=lambda p: _parse_version_key(p.name), reverse=True)
+    selected_version_dir = version_dirs[0]
+    return selected_version_dir / "default.xml", selected_version_dir.name
+
+
+def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool = False, requested_version: str = "") -> None:
+    """Create project by cloning remote demo defined in demos manifest repository."""
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+
+    config, config_path = _load_config_for_new(project_dir)
+    unirtos_root = get_unirtos_root(config_path if config_path else None)
+
+    demos_cfg = config.get("demos", {}) if isinstance(config, dict) else {}
+    if not isinstance(demos_cfg, dict):
+        demos_cfg = {}
+
+    demo_manifest_url = demos_cfg.get("manifest_repo_url", "").strip() or OFFICIAL_DEMO_MANIFEST_REPO_URL
+    demo_manifest_branch = demos_cfg.get("manifest_repo_branch", "").strip()
+    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+
+    demo_manifest_root.parent.mkdir(parents=True, exist_ok=True)
+    if not (demo_manifest_root / ".git").exists():
+        print(f"INFO: Cloning demo manifest repository to: {demo_manifest_root}")
+        env_setup.run_command(
+            f"git clone {demo_manifest_url} {demo_manifest_root}",
+            cwd=demo_manifest_root.parent,
+            config=config,
+        )
+    elif force:
+        print("INFO: Force updating demo manifest repository")
+        sync_manifest_repo(
+            demo_manifest_url,
+            demo_manifest_root,
+            config=config,
+            force=True,
+            specified_branch=demo_manifest_branch,
+            silent=False,
+        )
+    else:
+        print(f"INFO: Using local demo manifest repository: {demo_manifest_root}")
+
+    manifest_file, demo_version_dir = _select_demo_manifest_file(
+        demo_manifest_root,
+        project_name,
+        requested_version=requested_version,
+    )
+    demo_version = _strip_version_prefix(demo_version_dir)
+    target_dir = project_dir / f"{project_name}-{demo_version}"
+
+    print(f"INFO: Selected demo version: {demo_version}")
+    print(f"INFO: Selected demo manifest: {manifest_file}")
+
+    demo_projects = env_setup._collect_manifest_projects(demo_manifest_root, manifest_file)
+    if not demo_projects:
+        raise RuntimeError(f"No projects declared in demo manifest: {manifest_file}")
+
+    # Prefer root project path='.'; fallback to first project.
+    root_project = None
+    for p in demo_projects:
+        if p.get("path", "").strip() in {".", ""}:
+            root_project = p
+            break
+    if root_project is None:
+        root_project = demo_projects[0]
+
+    repo_url = root_project.get("url", "").strip()
+    if not repo_url:
+        raise RuntimeError(f"Invalid demo repo URL in manifest: {manifest_file}")
+
+    if target_dir.exists() and not is_dir_empty(target_dir):
+        raise RuntimeError(
+            f"ERROR: Project directory exists and is non-empty: {target_dir}\n"
+            "Resolution: Use a new project name or delete the existing directory."
+        )
+
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+    print(f"INFO: Cloning demo repository: {repo_url}")
+    env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config)
+
+    demo_version_tag = _normalize_version_tag(demo_version_dir)
+    env_setup._checkout_revision(
+        target_dir,
+        root_project.get("revision", ""),
+        config,
+        prefer_tag=True,
+        version_tag=demo_version_tag,
+    )
+
+    print(f"\nSUCCESS: Demo project '{project_name}-{demo_version}' created successfully from remote repo!")
+    print("GUIDANCE:")
+    print(f"  1. Navigate to project directory: cd {target_dir}")
+    print("  2. Execute environment configuration: unirtos-cli env-setup")
+    print("  3. Build project: unirtos-cli build")
 
 def list_local_sdk_versions(unirtos_root: Path) -> list:
     """
@@ -392,6 +600,56 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
                     lib_versions[lib_dir.name] = sorted(versions)
     return lib_versions
 
+
+def list_local_demo_versions(unirtos_root: Path) -> dict:
+    """
+    List locally cached demo versions from demo manifest repository.
+
+    Args:
+        unirtos_root: Path to Unirtos root directory
+
+    Returns:
+        dict: Dictionary of demo names and their available versions
+    """
+    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+    demo_versions = {}
+    if demo_manifest_root.exists():
+        for demo_dir in demo_manifest_root.iterdir():
+            if demo_dir.is_dir() and demo_dir.name != ".git":
+                versions = []
+                for ver_dir in demo_dir.iterdir():
+                    if ver_dir.is_dir() and ver_dir.name.startswith("v") and (ver_dir / "default.xml").exists():
+                        versions.append(ver_dir.name.lstrip("v"))
+                if versions:
+                    demo_versions[demo_dir.name] = sorted(versions)
+    return demo_versions
+
+
+def list_remote_demo_versions(unirtos_root: Path, config: dict = None, force: bool = False, silent: bool = False) -> dict:
+    """
+    List remote demo versions from official demo manifest repository.
+
+    Args:
+        unirtos_root: Path to Unirtos root directory
+        config: Environment configuration dictionary (optional)
+        force: Whether to force update the manifest repository
+        silent: Whether to suppress logs during sync. Default is False.
+
+    Returns:
+        dict: Dictionary of demo names and their remote versions
+    """
+    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+
+    demos_cfg = config.get("demos", {}) if isinstance(config, dict) else {}
+    if not isinstance(demos_cfg, dict):
+        demos_cfg = {}
+
+    branch = demos_cfg.get("manifest_repo_branch", "").strip()
+    repo_url = demos_cfg.get("manifest_repo_url", "").strip() or OFFICIAL_DEMO_MANIFEST_REPO_URL
+
+    sync_manifest_repo(repo_url, demo_manifest_root, config, force, specified_branch=branch, silent=silent)
+    return list_local_demo_versions(unirtos_root)
+
 def format_output(data: dict, is_json: bool) -> None:
     """
     Format output as JSON or human-readable text.
@@ -420,7 +678,16 @@ def format_output(data: dict, is_json: bool) -> None:
         
         # Handle library output
         elif isinstance(data["data"], dict):
-            title = "Installed libraries:" if data["type"] == "lib-local" else "Remote libraries:"
+            if data["type"] == "lib-local":
+                title = "Installed libraries:"
+            elif data["type"] == "lib-remote":
+                title = "Remote libraries:"
+            elif data["type"] == "demo-local":
+                title = "Local demos:"
+            elif data["type"] == "demo-remote":
+                title = "Remote demos:"
+            else:
+                title = "Items:"
             print(title)
             if data["data"]:
                 for lib_name, versions in data["data"].items():
@@ -480,17 +747,35 @@ def handle_init(args: argparse.Namespace) -> None:
 def handle_new_project(args: argparse.Namespace) -> None:
     """
     Project creation command.
-    Streamlines workflow: Create new directory → Initialize with templates.
+    Supports two modes:
+    1. Template mode (default): create from app-tmpl
+    2. Remote demo mode (--from-demo/-r): create from demo repository
     
     Args:
-        args: Parsed command-line arguments (contains project_name)
+        args: Parsed command-line arguments
     
     Raises:
         RuntimeError: If target directory exists and is non-empty
     """
-    project_name = args.project_name
-    target_dir = Path(project_name).absolute()
+    if args.force and not args.from_demo:
+        raise RuntimeError("ERROR: '--force/-f' is only valid when '--from-demo/-r' is specified.")
+    if args.demo_version and not args.from_demo:
+        raise RuntimeError("ERROR: '--version/-v' is only valid when '--from-demo/-r' is specified.")
 
+    project_name = _resolve_project_name(args.project_name)
+
+    if args.from_demo:
+        _create_from_remote_demo(
+            project_name,
+            Path(args.project_dir).absolute() if args.project_dir else Path.cwd(),
+            force=args.force,
+            requested_version=args.demo_version,
+        )
+        return
+
+    target_dir = _resolve_new_target_dir(project_name, args.project_dir)
+
+    # Default template mode
     if target_dir.exists():
         if not is_dir_empty(target_dir):
             raise RuntimeError(
@@ -506,11 +791,11 @@ def handle_new_project(args: argparse.Namespace) -> None:
     handle_init(init_args)
 
     print(f"\nSUCCESS: Unirtos project '{project_name}' created successfully!")
-    print(f"GUIDANCE:")
-    print(f"  1. Navigate to project directory: cd {project_name}")
-    print(f"  2. Execute environment configuration: unirtos-cli env-setup")
-    print(f"  3. Build project: unirtos-cli build")
-    print(f"  4. For production use: Validate all critical files before deployment")
+    print("GUIDANCE:")
+    print(f"  1. Navigate to project directory: cd {target_dir}")
+    print("  2. Execute environment configuration: unirtos-cli env-setup")
+    print("  3. Build project: unirtos-cli build")
+    print("  4. For production use: Validate all critical files before deployment")
 
 def handle_env_setup(args: argparse.Namespace) -> None:
     """
@@ -648,9 +933,12 @@ def handle_menuconfig(args: argparse.Namespace) -> None:
         RuntimeError: If menuconfig execution fails
     """
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
-    config_file = project_dir / CONFIG_FILE_NAME
-    if not config_file.exists():
-        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
+    config_file = find_env_config(project_dir)
+    if config_file is None:
+        raise RuntimeError(
+            f"ERROR: Configuration file not found from: {project_dir}\n"
+            "Resolution: Run this command from your app root or its subdirectories, or specify '-d <project-dir>'."
+        )
 
     with open(config_file, "r", encoding="utf-8") as f:
         config = json.load(f)
@@ -715,12 +1003,12 @@ def handle_ls_sdk(args: argparse.Namespace) -> None:
     try:
         # Get config file path and Unirtos root directory
         project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
-        config_file = project_dir / CONFIG_FILE_NAME
-        unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+        config_file = find_env_config(project_dir)
+        unirtos_root = get_unirtos_root(config_file)
         
         # Load config for manifest sync
         config = {}
-        if config_file.exists():
+        if config_file and config_file.exists():
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
         
@@ -761,12 +1049,12 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
     try:
         # Get config file path and Unirtos root directory
         project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
-        config_file = project_dir / CONFIG_FILE_NAME
-        unirtos_root = get_unirtos_root(config_file if config_file.exists() else None)
+        config_file = find_env_config(project_dir)
+        unirtos_root = get_unirtos_root(config_file)
         
         # Load config for manifest sync
         config = {}
-        if config_file.exists():
+        if config_file and config_file.exists():
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
         
@@ -797,6 +1085,40 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
     # Format and print output
     format_output(output_data, args.json_output)
 
+
+def handle_ls_demos(args: argparse.Namespace) -> None:
+    """
+    Handle ls-demos command to list demo versions from manifest repository.
+
+    Args:
+        args: Parsed command-line arguments (project_dir, force, json_output)
+    """
+    try:
+        project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
+        config_file = find_env_config(project_dir)
+        unirtos_root = get_unirtos_root(config_file)
+
+        config = {}
+        if config_file and config_file.exists():
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+
+        demo_versions = list_remote_demo_versions(unirtos_root, config, args.force, silent=args.json_output)
+        output_data = {
+            "success": True,
+            "message": "Demo versions fetched successfully",
+            "type": "demo-remote",
+            "data": demo_versions,
+        }
+    except Exception as e:
+        output_data = {
+            "success": False,
+            "message": f"Failed to list demo versions: {str(e)}",
+            "data": {},
+        }
+
+    format_output(output_data, args.json_output)
+
 # ===================== Command Line Interface =====================
 def build_arg_parser() -> argparse.ArgumentParser:
     """
@@ -811,30 +1133,36 @@ def build_arg_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Usage Examples:
-  1. Create new project (directory + initialization):
+  1. Create new project from template:
      unirtos-cli new my-unirtos-app
-  2. Initialize empty directory with templates:
+  2. Create new project from remote demo:
+     unirtos-cli new -r demo_a -d /path/to/workspace -f
+  3. Create new project from remote demo with version:
+      unirtos-cli new -r demo_a -v 1.0.0 -d /path/to/workspace
+  3. Initialize empty directory with templates:
      mkdir empty-dir && cd empty-dir && unirtos-cli init
-  3. Execute environment configuration:
+  4. Execute environment configuration:
      unirtos-cli env-setup -d /path/to/project
-  4. Build project (default 4 parallel jobs):
+  5. Build project (default 4 parallel jobs):
      unirtos-cli build -d /path/to/project
-  5. Build with custom parameters:
+  6. Build with custom parameters:
      unirtos-cli build --build-dir my-build --jobs 8
-  6. Clean build artifacts:
-      unirtos-cli clean -d /path/to/project
-  7. Open menuconfig:
-      unirtos-cli menuconfig -d /path/to/project
-  8. Check version:
+  7. Clean build artifacts:
+     unirtos-cli clean -d /path/to/project
+  8. Open menuconfig:
+     unirtos-cli menuconfig -d /path/to/project
+  9. Check version:
      unirtos-cli version
-  9. List local SDK versions (human-readable):
+  10. List local SDK versions (human-readable):
      unirtos-cli ls-sdk
-  10. List remote SDK versions (JSON output):
+  11. List remote SDK versions (JSON output):
      unirtos-cli ls-sdk -r -j
-  11. List remote SDK versions (force update manifest repo):
+  12. List remote SDK versions (force update manifest repo):
      unirtos-cli ls-sdk -r -f
-  12. List remote library versions (force update + JSON output):
-      unirtos-cli ls-libs -r -f -j
+  13. List remote library versions (force update + JSON output):
+     unirtos-cli ls-libs -r -f -j
+  14. List demo versions from manifests (force update + JSON output):
+      unirtos-cli ls-demos -f -j
         """
     )
 
@@ -843,11 +1171,34 @@ Usage Examples:
     # Subcommand: new (project creation)
     parser_new = subparsers.add_parser(
         "new",
-        help="Create new Unirtos project (directory creation + template deployment)"
+        help="Create new Unirtos project (from template or remote demo)"
     )
     parser_new.add_argument(
         "project_name",
-        help="Project name (will create directory with this name)"
+        metavar="project-name",
+        help="Project name (plain name only, no path separators)"
+    )
+    parser_new.add_argument(
+        "-r", "--from-demo",
+        action="store_true",
+        dest="from_demo",
+        help="Create project by cloning remote demo repository"
+    )
+    parser_new.add_argument(
+        "-v", "--version",
+        dest="demo_version",
+        default="",
+        help="Demo version for remote demo mode (supports '1.0.0' or 'v1.0.0'; only valid with -r/--from-demo)"
+    )
+    parser_new.add_argument(
+        "-d", "--project-dir",
+        default=".",
+        help="Base directory where <project-name> will be created (default: current working directory)"
+    )
+    parser_new.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force update demo manifest repo before selecting demo (only valid with -r/--from-demo)"
     )
 
     # Subcommand: init (core initialization)
@@ -1000,6 +1351,27 @@ Usage Examples:
         help="Output result in JSON format"
     )
 
+    # Subcommand: ls-demos (list demo versions)
+    parser_ls_demos = subparsers.add_parser(
+        "ls-demos",
+        help="List local/remote demo versions"
+    )
+    parser_ls_demos.add_argument(
+        "-d", "--project-dir",
+        default=".",
+        help="Project directory (to read env_config.json, default: current working directory)"
+    )
+    parser_ls_demos.add_argument(
+        "-f", "--force",
+        action="store_true",
+        help="Force update manifest repo (ignore 1-hour sync interval)"
+    )
+    parser_ls_demos.add_argument(
+        "-j", "--json-output",
+        action="store_true",
+        help="Output result in JSON format"
+    )
+
     return parser
 
 # ===================== Main Entry Point =====================
@@ -1020,7 +1392,8 @@ def main() -> None:
             "menuconfig": handle_menuconfig,
             "version": handle_version,
             "ls-sdk": handle_ls_sdk,
-            "ls-libs": handle_ls_libs
+            "ls-libs": handle_ls_libs,
+            "ls-demos": handle_ls_demos
         }
 
         if args.command in command_handlers:

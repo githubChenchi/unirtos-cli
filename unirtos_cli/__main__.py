@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.5"
+DEV_VERSION = "1.0.6"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -1138,7 +1138,7 @@ Usage Examples:
   2. Create new project from remote demo:
      unirtos-cli new -r demo_a -d /path/to/workspace -f
   3. Create new project from remote demo with version:
-      unirtos-cli new -r demo_a -v 1.0.0 -d /path/to/workspace
+     unirtos-cli new -r demo_a -v 1.0.0 -d /path/to/workspace
   3. Initialize empty directory with templates:
      mkdir empty-dir && cd empty-dir && unirtos-cli init
   4. Execute environment configuration:
@@ -1154,13 +1154,13 @@ Usage Examples:
   9. Check version:
      unirtos-cli version
   10. List local SDK versions (human-readable):
-     unirtos-cli ls-sdk
+      unirtos-cli ls-sdk
   11. List remote SDK versions (JSON output):
-     unirtos-cli ls-sdk -r -j
+      unirtos-cli ls-sdk -r -j
   12. List remote SDK versions (force update manifest repo):
-     unirtos-cli ls-sdk -r -f
+      unirtos-cli ls-sdk -r -f
   13. List remote library versions (force update + JSON output):
-     unirtos-cli ls-libs -r -f -j
+      unirtos-cli ls-libs -r -f -j
   14. List demo versions from manifests (force update + JSON output):
       unirtos-cli ls-demos -f -j
         """

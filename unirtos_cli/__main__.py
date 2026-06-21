@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.6"
+DEV_VERSION = "1.0.7"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -406,7 +406,7 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
 
     demo_manifest_url = demos_cfg.get("manifest_repo_url", "").strip() or OFFICIAL_DEMO_MANIFEST_REPO_URL
     demo_manifest_branch = demos_cfg.get("manifest_repo_branch", "").strip()
-    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+    demo_manifest_root = unirtos_root / "demos" / "manifests"
 
     demo_manifest_root.parent.mkdir(parents=True, exist_ok=True)
     if not (demo_manifest_root / ".git").exists():
@@ -611,7 +611,7 @@ def list_local_demo_versions(unirtos_root: Path) -> dict:
     Returns:
         dict: Dictionary of demo names and their available versions
     """
-    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+    demo_manifest_root = unirtos_root / "demos" / "manifests"
     demo_versions = {}
     if demo_manifest_root.exists():
         for demo_dir in demo_manifest_root.iterdir():
@@ -638,7 +638,7 @@ def list_remote_demo_versions(unirtos_root: Path, config: dict = None, force: bo
     Returns:
         dict: Dictionary of demo names and their remote versions
     """
-    demo_manifest_root = unirtos_root / "unirtos-demos-manifests"
+    demo_manifest_root = unirtos_root / "demos" / "manifests"
 
     demos_cfg = config.get("demos", {}) if isinstance(config, dict) else {}
     if not isinstance(demos_cfg, dict):

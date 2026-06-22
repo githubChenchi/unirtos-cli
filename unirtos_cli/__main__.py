@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.7"
+DEV_VERSION = "1.0.8"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -835,7 +835,7 @@ def handle_build(args: argparse.Namespace) -> None:
     Invokes package-internal build module with module/version (type=app, operation=r fixed).
     
     Args:
-        args: Parsed command-line arguments (build_dir, jobs, module, version)
+        args: Parsed command-line arguments (jobs, module, version)
     
     Raises:
         RuntimeError: If build process fails (config missing/CMake error/make error)
@@ -849,7 +849,6 @@ def handle_build(args: argparse.Namespace) -> None:
 
     print(f"INFO: Starting Unirtos project build")
     print(f"INFO: Project directory: {project_dir}")
-    print(f"INFO: Build directory: {args.build_dir}")
     print(f"INFO: Parallel jobs override: {args.jobs if args.jobs is not None else '(not set, use config/default)'}")
 
     try:
@@ -859,7 +858,6 @@ def handle_build(args: argparse.Namespace) -> None:
         # Override sys.argv to pass build arguments to the module
         sys.argv = [
             sys.argv[0],
-            "--build-dir", args.build_dir,
         ]
 
         if args.jobs is not None:
@@ -1146,7 +1144,7 @@ Usage Examples:
   5. Build project (default 4 parallel jobs):
      unirtos-cli build -d /path/to/project
   6. Build with custom parameters:
-     unirtos-cli build --build-dir my-build --jobs 8
+      unirtos-cli build --jobs 8
   7. Clean build artifacts:
      unirtos-cli clean -d /path/to/project
   8. Open menuconfig:
@@ -1232,11 +1230,6 @@ Usage Examples:
         "-d", "--project-dir",
         default=".",
         help="Project directory (default: current working directory)"
-    )
-    parser_build.add_argument(
-        "-b", "--build-dir",
-        default="build",
-        help="CMake build directory (default: build/)"
     )
     parser_build.add_argument(
         "-j", "--jobs",

@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.9"
+DEV_VERSION = "1.0.10"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -714,10 +714,12 @@ def handle_init(args: argparse.Namespace) -> None:
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
     print(f"INFO: Starting Unirtos environment initialization: {project_dir}")
 
+    templates_deployed = False
     if is_dir_empty(project_dir):
         print(f"INFO: Target directory is empty - deploying Unirtos templates...")
         tmpl_dir = get_tmpl_dir()
         copy_tmpl_to_target(tmpl_dir, project_dir)
+        templates_deployed = True
     else:
         print(f"WARNING: Target directory is not empty - skipping template deployment (only validating files)")
 
@@ -741,6 +743,23 @@ def handle_init(args: argparse.Namespace) -> None:
         raise RuntimeError(
             f"ERROR: Critical Unirtos files missing: {', '.join(missing_files)}\n{error_guide}"
         )
+
+    if templates_deployed:
+        env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+        config_file = project_dir / CONFIG_FILE_NAME
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+
+        latest_sdk_version = env_setup.get_latest_sdk_version(config)
+        sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
+        if not isinstance(sdk_config, dict):
+            sdk_config = {}
+        sdk_config["version"] = latest_sdk_version
+        config["sdk"] = sdk_config
+
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.write("\n")
 
     print("SUCCESS: Unirtos environment initialization completed (template deployment + integrity check passed).")
 

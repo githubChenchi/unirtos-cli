@@ -291,6 +291,129 @@ def _normalize_version_tag(version: str) -> str:
     return version if version.startswith("v") else f"v{version}"
 
 
+def _strip_version_prefix(version: str) -> str:
+    """Strip leading 'v' from a version string for display and config use."""
+    s = (version or "").strip()
+    return s[1:] if s.startswith("v") else s
+
+
+def _parse_version_key(version_name: str):
+    """Parse version folder names like v1.2.3 for sorting, fallback to lexical."""
+    s = (version_name or "").strip()
+    if s.startswith("v"):
+        s = s[1:]
+    parts = re.split(r"[._-]", s)
+    key = []
+    for p in parts:
+        if p.isdigit():
+            key.append((0, int(p)))
+        else:
+            key.append((1, p))
+    return key
+
+
+def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified_branch: str = "", silent: bool = True) -> None:
+    """Clone or update a manifest repository without emitting user-facing logs."""
+    target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    if not (target_dir / ".git").exists():
+        run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+        return
+
+    if specified_branch and specified_branch.strip():
+        specified_branch = specified_branch.strip()
+        run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent)
+        return
+
+    try:
+        run_command("git pull origin main", cwd=target_dir, config=config, silent=silent)
+    except Exception:
+        run_command("git pull origin master", cwd=target_dir, config=config, silent=silent)
+
+
+def get_latest_sdk_version(config: dict) -> str:
+    """Resolve the latest SDK version from the SDK manifest repository."""
+    unirtos_root = get_unirtos_root(config)
+    sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
+    if not isinstance(sdk_config, dict):
+        sdk_config = {}
+
+    repo_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
+    specified_branch = sdk_config.get("manifest_repo_branch", "").strip()
+    sdk_manifest_root = unirtos_root / "sdk" / "manifests"
+
+    _sync_manifest_repo(repo_url, sdk_manifest_root, config, specified_branch=specified_branch, silent=True)
+
+    version_dirs = []
+    if sdk_manifest_root.exists():
+        for item in sdk_manifest_root.iterdir():
+            if item.is_dir() and item.name.startswith("v") and (item / "default.xml").exists():
+                version_dirs.append(item.name)
+
+    if not version_dirs:
+        raise RuntimeError(f"No valid SDK versions found in manifest repository: {sdk_manifest_root}")
+
+    version_dirs.sort(key=_parse_version_key, reverse=True)
+    return _strip_version_prefix(version_dirs[0])
+
+
+def create_vscode_workspace(config: dict, config_path: Path) -> Path:
+    """Create a VSCode workspace file for the current app, SDK, and installed libraries."""
+    config_path = Path(config_path).absolute()
+    app_root = config_path.parent
+    unirtos_root = get_unirtos_root(config)
+    sdk_version = str(config.get("sdk", {}).get("version", "")).strip()
+    if not sdk_version:
+        raise RuntimeError(f"Missing sdk.version in {config_path}")
+
+    folders = []
+    seen = set()
+
+    def _add_folder(folder_path: Path) -> None:
+        resolved = folder_path.expanduser().absolute()
+        key = str(resolved)
+        if key in seen and folder_path != app_root:
+            return
+        seen.add(key)
+        folders.append({"path": resolved.as_posix()})
+
+    _add_folder(app_root)
+
+    sdk_path = unirtos_root / "sdk" / f"v{sdk_version}"
+    if sdk_path.exists():
+        _add_folder(sdk_path)
+
+    libraries_config = config.get("libraries", {}) if isinstance(config, dict) else {}
+    if not isinstance(libraries_config, dict):
+        libraries_config = {}
+
+    libraries_list = libraries_config.get("list", [])
+    if isinstance(libraries_list, list):
+        for lib in libraries_list:
+            if not isinstance(lib, dict):
+                continue
+            lib_name = str(lib.get("name", "")).strip()
+            lib_version = str(lib.get("version", "")).strip()
+            if not lib_name or not lib_version:
+                continue
+            lib_path = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
+            if lib_path.exists():
+                _add_folder(lib_path)
+
+    workspace_name = f"{app_root.name}.code-workspace"
+    workspace_path = app_root / workspace_name
+    workspace_data = {
+        "folders": folders,
+        "settings": {},
+    }
+
+    with open(workspace_path, "w", encoding="utf-8") as f:
+        json.dump(workspace_data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+    return workspace_path
+
+
 def _resolve_project_url(fetch: str, project_name: str) -> str:
     """Resolve project git URL from manifest remote.fetch + project.name."""
     fetch = (fetch or "").strip()
@@ -847,6 +970,9 @@ def main():
                 print(f"  - {lib['name']}: {unirtos_root / 'libraries' / lib['name'] / lib_version_dir}", flush=True)
         else:
             print("Dependent Libraries Paths: No libraries configured")
+
+        workspace_path = create_vscode_workspace(config, Path(args.config).absolute())
+        print(f"VSCode workspace created: {workspace_path}", flush=True)
         
         print("\nNote: You can directly reference the above paths in local applications to build projects", flush=True)
     

@@ -976,9 +976,17 @@ def handle_menuconfig(args: argparse.Namespace) -> None:
             "Resolution: Run 'unirtos-cli env-setup' first to pull the specified SDK version."
         )
 
+    app_menuconfig_dir = project_dir / "menuconfig"
+    app_menuconfig_dir.mkdir(parents=True, exist_ok=True)
+    app_config_path = app_menuconfig_dir / ".config"
+
     print(f"INFO: Launching menuconfig in SDK root: {sdk_root}")
     try:
-        subprocess.run(["unirtos", "menuconfig"], cwd=sdk_root, check=True)
+        menuconfig_env = os.environ.copy()
+        menuconfig_env["KCONFIG_CONFIG"] = str(app_config_path)
+        menuconfig_env["UNIRTOS_APP_MENUCONFIG_DIR"] = str(app_menuconfig_dir)
+        menuconfig_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(project_dir)
+        subprocess.run(["unirtos", "menuconfig"], cwd=sdk_root, check=True, env=menuconfig_env)
         print("SUCCESS: menuconfig exited normally.")
     except FileNotFoundError as e:
         raise RuntimeError(

@@ -190,6 +190,10 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     run_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(app_root)
     run_env["UNIRTOS_EXTERNAL_APP_NAME"] = app_root.name
     run_env["UNIRTOS_ROOT"] = str(env.get_unirtos_root(config))
+    app_menuconfig_dir = app_root / "menuconfig"
+    app_menuconfig_dir.mkdir(parents=True, exist_ok=True)
+    run_env["UNIRTOS_APP_MENUCONFIG_DIR"] = str(app_menuconfig_dir)
+    run_env["KCONFIG_CONFIG"] = str(app_menuconfig_dir / ".config")
 
     # Target name follows resolved version priority: CLI --version > env build.version > app root folder name.
     target_name = build_profile["version"]

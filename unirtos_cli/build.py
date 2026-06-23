@@ -109,14 +109,15 @@ def resolve_sdk_path(config: dict) -> Path:
     return sdk_path
 
 
-def resolve_sdk_build_profile(config: dict, args: argparse.Namespace) -> dict:
+def resolve_sdk_build_profile(config: dict, args: argparse.Namespace, app_root: Path) -> dict:
     """Resolve SDK build.sh make profile from env_config.json and CLI overrides."""
     build_cfg = config.get("build", {})
     if not isinstance(build_cfg, dict):
         build_cfg = {}
 
     module = args.module or build_cfg.get("module")
-    version = args.version or build_cfg.get("version") or "application"
+    # Default target/version uses the app root folder name (where env_config.json is located).
+    version = args.version or build_cfg.get("version") or app_root.name
 
     jobs_from_config = build_cfg.get("jobs", 4)
     jobs = args.jobs if args.jobs is not None else jobs_from_config
@@ -159,7 +160,7 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
         )
 
     sdk_path = resolve_sdk_path(config)
-    build_profile = resolve_sdk_build_profile(config, args)
+    build_profile = resolve_sdk_build_profile(config, args, app_root)
 
     # unirtos is the global command provided by the cross-compilation toolchain.
     # It must be executed from the SDK root directory.
@@ -190,7 +191,7 @@ def run_sdk_build(config: dict, args: argparse.Namespace) -> None:
     run_env["UNIRTOS_EXTERNAL_APP_NAME"] = app_root.name
     run_env["UNIRTOS_ROOT"] = str(env.get_unirtos_root(config))
 
-    # Target name follows resolved version priority: CLI --version > env build.version > application.
+    # Target name follows resolved version priority: CLI --version > env build.version > app root folder name.
     target_name = build_profile["version"]
     run_env["UNIRTOS_APP_TARGET_NAME"] = target_name
     

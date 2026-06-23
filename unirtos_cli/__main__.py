@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.8"
+DEV_VERSION = "1.0.9"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -1012,7 +1012,12 @@ def handle_ls_sdk(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            versions = list_remote_sdk_versions(unirtos_root, config, args.force, silent=args.json_output)
+            if not args.json_output:
+                if args.force:
+                    print("INFO: Refreshing local SDK manifest cache and fetching remote version list, please wait...")
+                else:
+                    print("INFO: Fetching remote SDK version list, please wait...")
+            versions = list_remote_sdk_versions(unirtos_root, config, args.force, silent=True)
             output_data = {
                 "success": True,
                 "message": "Remote SDK versions fetched successfully",
@@ -1058,7 +1063,12 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
-            lib_versions = list_remote_lib_versions(unirtos_root, config, args.force, silent=args.json_output)
+            if not args.json_output:
+                if args.force:
+                    print("INFO: Refreshing local libraries manifest cache and fetching remote version list, please wait...")
+                else:
+                    print("INFO: Fetching remote library version list, please wait...")
+            lib_versions = list_remote_lib_versions(unirtos_root, config, args.force, silent=True)
             output_data = {
                 "success": True,
                 "message": "Remote library versions fetched successfully",
@@ -1101,7 +1111,12 @@ def handle_ls_demos(args: argparse.Namespace) -> None:
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
-        demo_versions = list_remote_demo_versions(unirtos_root, config, args.force, silent=args.json_output)
+        if not args.json_output:
+            if args.force:
+                print("INFO: Refreshing local demos manifest cache and fetching remote version list, please wait...")
+            else:
+                print("INFO: Fetching remote demo version list, please wait...")
+        demo_versions = list_remote_demo_versions(unirtos_root, config, args.force, silent=True)
         output_data = {
             "success": True,
             "message": "Demo versions fetched successfully",

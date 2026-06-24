@@ -23,10 +23,12 @@ target_include_directories(${target} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/main/src
 )
 
+# Add your include directories here.
 target_include_directories(${target} PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/main/inc
 )
 
+# Add your source files here.
 file(GLOB_RECURSE APP_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/main/src/*.c
 )
@@ -51,4 +53,5 @@ if(_app_external_library_targets)
 	target_link_libraries(${target} PUBLIC ${_app_external_library_targets})
 endif()
 
-target_link_libraries_if(CONFIG_QOSA_LINK_SYSTEM_LIBRARIES_FUNC THEN ${target} system_os)
+# UNcomment to add the libraries you need here.
+# target_link_libraries(${target} libxxx)

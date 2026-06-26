@@ -721,72 +721,6 @@ def format_output(data: dict, is_json: bool) -> None:
                 print("  (no libraries found)")
 
 # ===================== Command Handler Functions =====================
-def handle_init(args: argparse.Namespace) -> None:
-    """
-    Core initialization command.
-    Key functionality:
-    1. Copy template files to empty target directory
-    2. Validate critical file integrity
-    3. Ensure compliance with Unirtos application structure
-    
-    Args:
-        args: Parsed command-line arguments (contains project_dir)
-    
-    Raises:
-        RuntimeError: If critical files are missing
-    """
-    project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
-    print(f"INFO: Starting Unirtos environment initialization: {project_dir}")
-
-    templates_deployed = False
-    if is_dir_empty(project_dir):
-        print(f"INFO: Target directory is empty - deploying Unirtos templates...")
-        tmpl_dir = get_tmpl_dir()
-        copy_tmpl_to_target(tmpl_dir, project_dir)
-        templates_deployed = True
-    else:
-        print(f"WARNING: Target directory is not empty - skipping template deployment (only validating files)")
-
-    # Validate critical file presence 
-    critical_files = {
-        "configuration file": project_dir / CONFIG_FILE_NAME
-    }
-
-    missing_files = []
-    for file_desc, file_path in critical_files.items():
-        if not file_path.exists():
-            missing_files.append(f"{file_desc} ({file_path.name})")
-
-    if missing_files:
-        error_guide = "\n".join([
-            "Corrective Actions:",
-            f"1. Re-run 'unirtos-cli init' in an EMPTY directory to deploy full templates",
-            f"2. Manually restore missing files to: {project_dir}",
-            f"3. Reinstall Unirtos CLI: pip install --force-reinstall {UNIRTOS_CLI_NAME}"
-        ])
-        raise RuntimeError(
-            f"ERROR: Critical Unirtos files missing: {', '.join(missing_files)}\n{error_guide}"
-        )
-
-    if templates_deployed:
-        env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
-        config_file = project_dir / CONFIG_FILE_NAME
-        with open(config_file, "r", encoding="utf-8") as f:
-            config = json.load(f)
-
-        latest_sdk_version = env_setup.get_latest_sdk_version(config)
-        sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
-        if not isinstance(sdk_config, dict):
-            sdk_config = {}
-        sdk_config["version"] = latest_sdk_version
-        config["sdk"] = sdk_config
-
-        with open(config_file, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-
-    print("SUCCESS: Unirtos environment initialization completed (template deployment + integrity check passed).")
-
 def handle_new_project(args: argparse.Namespace) -> None:
     """
     Project creation command.
@@ -818,7 +752,7 @@ def handle_new_project(args: argparse.Namespace) -> None:
 
     target_dir = _resolve_new_target_dir(project_name, args.project_dir)
 
-    # Default template mode
+    # Default template mode: copy templates to target directory
     if target_dir.exists():
         if not is_dir_empty(target_dir):
             raise RuntimeError(
@@ -830,8 +764,38 @@ def handle_new_project(args: argparse.Namespace) -> None:
         target_dir.mkdir(parents=True, exist_ok=True)
         print(f"INFO: Created new Unirtos project directory: {target_dir}")
 
-    init_args = argparse.Namespace(project_dir=str(target_dir))
-    handle_init(init_args)
+    # Deploy templates
+    print(f"INFO: Deploying Unirtos templates...")
+    tmpl_dir = get_tmpl_dir()
+    copy_tmpl_to_target(tmpl_dir, target_dir)
+
+    # Validate critical files
+    config_file = target_dir / CONFIG_FILE_NAME
+    if not config_file.exists():
+        error_guide = "\n".join([
+            "Corrective Actions:",
+            f"1. Manually restore {CONFIG_FILE_NAME} to: {target_dir}",
+            f"2. Reinstall Unirtos CLI: pip install --force-reinstall {UNIRTOS_CLI_NAME}"
+        ])
+        raise RuntimeError(
+            f"ERROR: Critical Unirtos file missing: {CONFIG_FILE_NAME}\n{error_guide}"
+        )
+
+    # Update SDK version in config
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+    with open(config_file, "r", encoding="utf-8") as f:
+        config = json.load(f)
+
+    latest_sdk_version = env_setup.get_latest_sdk_version(config)
+    sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
+    if not isinstance(sdk_config, dict):
+        sdk_config = {}
+    sdk_config["version"] = latest_sdk_version
+    config["sdk"] = sdk_config
+
+    with open(config_file, "w", encoding="utf-8") as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+        f.write("\n")
 
     print(f"\nSUCCESS: Unirtos project '{project_name}' created successfully!")
     print("GUIDANCE:")
@@ -1318,17 +1282,6 @@ Usage Examples:
         help="Force update demo manifest repo before selecting demo (only valid with -r/--from-demo)"
     )
 
-    # Subcommand: init (core initialization)
-    parser_init = subparsers.add_parser(
-        "init",
-        help="Initialize directory with Unirtos templates (empty dir) or validate files (non-empty dir)"
-    )
-    parser_init.add_argument(
-        "-d", "--project-dir",
-        default=".",
-        help="Target directory (default: current working directory)"
-    )
-
     # Subcommand: env_setup (environment configuration)
     parser_env_setup = subparsers.add_parser(
         "env-setup",
@@ -1497,7 +1450,6 @@ def main() -> None:
 
         command_handlers = {
             "new": handle_new_project,
-            "init": handle_init,
             "env-setup": handle_env_setup,
             "build": handle_build,
             "clean": handle_clean,

@@ -1389,7 +1389,7 @@ Usage Examples:
     # Subcommand: ls-demos (list demo versions)
     parser_ls_demos = subparsers.add_parser(
         "ls-demos",
-        help="List local/remote demo versions"
+        help="List remote demo versions"
     )
     parser_ls_demos.add_argument(
         "-d", "--project-dir",

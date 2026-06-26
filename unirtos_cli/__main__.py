@@ -232,7 +232,7 @@ def get_last_git_update_time(repo_dir: Path) -> float:
     
     return 0.0
 
-def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> None:
+def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> tuple:
     """
     Clone or update manifest repository (reuse run_command from unirtos_env_setup).
     Supports branch fallback: specified_branch > main > master
@@ -245,6 +245,9 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
         specified_branch: Branch to pull from. If empty, tries main first, then master.
         silent: Whether to suppress logs. Default is False.
     
+    Returns:
+        tuple: (will_pull: bool, is_auto_refresh: bool) - indicates if pull will happen and if it's auto-refresh (timeout-based)
+    
     Raises:
         RuntimeError: If git clone/pull fails
     """
@@ -254,13 +257,17 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
     if not (target_dir / ".git").exists():
         # If the repository does not exist: execute git clone
         env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+        return False, False
     else:
         # If the repository exists: determine whether git pull is needed
         current_time = time.time()
         last_update_time = get_last_git_update_time(target_dir)
         time_diff = current_time - last_update_time
         
-        if force or time_diff > UPDATE_INTERVAL:
+        will_pull = force or time_diff > UPDATE_INTERVAL
+        is_auto_refresh = (not force) and (time_diff > UPDATE_INTERVAL)
+        
+        if will_pull:
             # Forced update or more than 1 hour has elapsed: execute git pull with branch fallback
             if specified_branch and specified_branch.strip():
                 # User specified a branch
@@ -294,9 +301,10 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
                             f"Main error: {str(main_err)}\n"
                             f"Master error: {str(master_err)}"
                         )
+            return True, is_auto_refresh
         else:
             # Not timed out and not forced: skip pull
-            pass
+            return False, False
 
 
 def _normalize_version_tag(version: str) -> str:
@@ -409,6 +417,9 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
     demo_manifest_root = unirtos_root / "demos" / "manifests"
 
     demo_manifest_root.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Check if manifest needs refresh
+    will_refresh = False
     if not (demo_manifest_root / ".git").exists():
         print(f"INFO: Cloning demo manifest repository to: {demo_manifest_root}")
         env_setup.run_command(
@@ -416,18 +427,31 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
             cwd=demo_manifest_root.parent,
             config=config,
         )
-    elif force:
-        print("INFO: Force updating demo manifest repository")
-        sync_manifest_repo(
-            demo_manifest_url,
-            demo_manifest_root,
-            config=config,
-            force=True,
-            specified_branch=demo_manifest_branch,
-            silent=False,
-        )
     else:
-        print(f"INFO: Using local demo manifest repository: {demo_manifest_root}")
+        # Check timeout: auto-refresh if > 1 hour
+        current_time = time.time()
+        last_update_time = get_last_git_update_time(demo_manifest_root)
+        time_diff = current_time - last_update_time
+        should_refresh = force or time_diff > UPDATE_INTERVAL
+        
+        if should_refresh:
+            will_refresh = True
+            if not force and time_diff > UPDATE_INTERVAL:
+                # Auto-refresh due to timeout
+                print("INFO: Demo manifest cache expired, refreshing...")
+            if force:
+                print("INFO: Force updating demo manifest repository")
+            
+            sync_manifest_repo(
+                demo_manifest_url,
+                demo_manifest_root,
+                config=config,
+                force=force,
+                specified_branch=demo_manifest_branch,
+                silent=True,
+            )
+        else:
+            print(f"INFO: Using local demo manifest repository: {demo_manifest_root}")
 
     manifest_file, demo_version_dir = _select_demo_manifest_file(
         demo_manifest_root,
@@ -1039,11 +1063,29 @@ def handle_ls_sdk(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
+            # Check if manifest needs refresh (for logging purposes)
+            env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+            sdk_manifest_root = unirtos_root / "sdk" / "manifests"
+            
+            # Pre-check: will manifest be synced?
+            will_sync = False
+            is_auto_refresh = False
+            if (sdk_manifest_root / ".git").exists():
+                current_time = time.time()
+                last_update_time = get_last_git_update_time(sdk_manifest_root)
+                time_diff = current_time - last_update_time
+                will_sync = args.force or time_diff > UPDATE_INTERVAL
+                is_auto_refresh = (not args.force) and (time_diff > UPDATE_INTERVAL)
+            else:
+                will_sync = True  # Will clone first time
+            
+            # Print appropriate message
             if not args.json_output:
-                if args.force:
+                if will_sync:
                     print("INFO: Refreshing local SDK manifest cache and fetching remote version list, please wait...")
                 else:
-                    print("INFO: Fetching remote SDK version list, please wait...")
+                    print("INFO: Fetching remote SDK version list from local cache, please wait...")
+            
             versions = list_remote_sdk_versions(unirtos_root, config, args.force, silent=True)
             output_data = {
                 "success": True,
@@ -1090,11 +1132,29 @@ def handle_ls_libs(args: argparse.Namespace) -> None:
         
         # Get versions (local/remote)
         if args.remote:
+            # Check if manifest needs refresh (for logging purposes)
+            env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+            lib_manifest_root = unirtos_root / "libraries" / "manifests"
+            
+            # Pre-check: will manifest be synced?
+            will_sync = False
+            is_auto_refresh = False
+            if (lib_manifest_root / ".git").exists():
+                current_time = time.time()
+                last_update_time = get_last_git_update_time(lib_manifest_root)
+                time_diff = current_time - last_update_time
+                will_sync = args.force or time_diff > UPDATE_INTERVAL
+                is_auto_refresh = (not args.force) and (time_diff > UPDATE_INTERVAL)
+            else:
+                will_sync = True  # Will clone first time
+            
+            # Print appropriate message
             if not args.json_output:
-                if args.force:
+                if will_sync:
                     print("INFO: Refreshing local libraries manifest cache and fetching remote version list, please wait...")
                 else:
-                    print("INFO: Fetching remote library version list, please wait...")
+                    print("INFO: Fetching remote library version list from local cache, please wait...")
+            
             lib_versions = list_remote_lib_versions(unirtos_root, config, args.force, silent=True)
             output_data = {
                 "success": True,
@@ -1138,11 +1198,28 @@ def handle_ls_demos(args: argparse.Namespace) -> None:
             with open(config_file, "r", encoding="utf-8") as f:
                 config = json.load(f)
 
+        # Check if manifest needs refresh (for logging purposes)
+        demo_manifest_root = unirtos_root / "demos" / "manifests"
+        
+        # Pre-check: will manifest be synced?
+        will_sync = False
+        is_auto_refresh = False
+        if (demo_manifest_root / ".git").exists():
+            current_time = time.time()
+            last_update_time = get_last_git_update_time(demo_manifest_root)
+            time_diff = current_time - last_update_time
+            will_sync = args.force or time_diff > UPDATE_INTERVAL
+            is_auto_refresh = (not args.force) and (time_diff > UPDATE_INTERVAL)
+        else:
+            will_sync = True  # Will clone first time
+        
+        # Print appropriate message
         if not args.json_output:
-            if args.force:
+            if will_sync:
                 print("INFO: Refreshing local demos manifest cache and fetching remote version list, please wait...")
             else:
-                print("INFO: Fetching remote demo version list, please wait...")
+                print("INFO: Fetching remote demo version list from local cache, please wait...")
+        
         demo_versions = list_remote_demo_versions(unirtos_root, config, args.force, silent=True)
         output_data = {
             "success": True,

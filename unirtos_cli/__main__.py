@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.12"
+DEV_VERSION = "1.0.13"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 

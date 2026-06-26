@@ -1,6 +1,6 @@
 # UniRTOS CLI 用户使用手册
 
-**版本：** unirtos-cli v1.0.12+  
+**版本：** unirtos-cli v1.0.13+  
 **适用平台：** Windows / Linux / macOS（目前编译工具链仅支持 Windows 系统）
 
 ---
@@ -65,7 +65,7 @@ unirtos-cli build
 
 ## 4. 配置文件详解 (env_config.json)
 
-`env_config.json` 是项目根目录下的核心配置文件，由 `init` / `new` 命令自动生成模板，用户需在其中填写模块名称等信息。针对基于模板创建项目的场景，`sdk.version` 会自动写入最新可用 SDK 版本。
+`env_config.json` 是项目根目录下的核心配置文件，由 `new` 命令自动生成模板，用户需在其中填写模块名称等信息。针对基于模板创建项目的场景，`sdk.version` 会自动写入最新可用 SDK 版本。
 
 ### 使用建议（推荐）
 
@@ -77,7 +77,7 @@ unirtos-cli build
 - `sdk.version`：SDK 版本
 - `libraries.list[].name` / `libraries.list[].version`：依赖库名称与版本
 
-其余 Manifest 相关字段（如 `sdk.manifest_repo_url`、`sdk.manifest_repo_branch`、`libraries.manifest_repo_url`、`libraries.manifest_repo_branch`、`demos.manifest_repo_url`、`demos.manifest_repo_branch`）在无私有镜像、内网仓库或特殊分支需求时，建议保持模板默认值，不要修改。
+其余 Manifest 相关字段（如 `sdk.manifest_repo_url`、`sdk.manifest_repo_branch`、`libraries.manifest_repo_url`、`libraries.manifest_repo_branch`、`demos.manifest_repo_url`、`demos.manifest_repo_branch`）在无私有镜像、内网仓库或特殊分支需求时，建议保持模板默认值，**不要修改**。
 
 ### 完整示例
 
@@ -207,33 +207,6 @@ unirtos-cli new -r demo_a -v 1.0.0
 
 ---
 
-### 5.2 `init` — 初始化目录
-
-在**当前目录**（或指定目录）中初始化 UniRTOS 项目模板，或对已存在项目进行完整性校验。
-
-```bash
-unirtos-cli init [-d <project-dir>]
-```
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `-d`, `--project-dir` | `.`（当前目录） | 目标项目目录路径。 |
-
-**行为说明：**
-
-- 目标目录为**空**时：将模板文件（`CMakeLists.txt`、`env_config.json` 等）复制到该目录。
-  - 创建完成后，`env_config.json` 中的 `sdk.version` 会自动写为最新可用 SDK 版本。
-- 目标目录为**非空**时：不覆盖已有文件，仅校验关键文件（`env_config.json`）是否存在。
-
-**示例：**
-
-```bash
-mkdir unirtos-app && cd unirtos-app
-unirtos-cli init
-```
-
----
-
 ### 5.3 `env-setup` — 拉取环境
 
 根据 `env_config.json` 的配置，拉取指定版本的 SDK 和所有依赖库到本地存储目录。
@@ -246,97 +219,11 @@ unirtos-cli env-setup [-d <project-dir>]
 |------|--------|------|
 | `-d`, `--project-dir` | `.`（当前目录） | 包含 `env_config.json` 的项目目录。 |
 
-**执行流程：**
-
-1. 验证 `git` 工具是否可用。
-2. 检查 SDK 是否已拉取且版本匹配（通过 `~/.unirtos/sdk/v<version>/version.txt`）。
-   - 已匹配则跳过，不重复拉取。
-3. 如需拉取 SDK：
-   - 克隆或更新 SDK Manifest 仓库到 `~/.unirtos/sdk/manifests/`。
-   - 解析 `manifests/v<version>/default.xml`，按 project 列表 clone/fetch 各 Git 仓库。
-   - 对 SDK 源码仓库按标签 `v<version>`（如 `v1.0.0`）进行检出。
-   - 写入 `version.txt` 标记完成。
-4. 对 `libraries.list` 中每个库执行同样的版本检查与拉取流程。
-   - Manifest 仓库：`~/.unirtos/libraries/manifests/`。
-   - 库源码：`~/.unirtos/libraries/<name>/v<version>/`。
-5. 在 App 根目录生成 `<app-name>.code-workspace`，自动纳入：
-   - 当前 App 路径；
-   - `env_config.json` 中指定且已拉取的 SDK 版本路径；
-   - `env_config.json` 中指定且已拉取的库路径。
-
 **示例：**
 
 ```bash
 cd unirtos-app
 unirtos-cli env-setup
-
-# 示例输出（SDK 已存在时）：
-# INFO: Executing Unirtos environment setup
-# INFO: Configuration file: C:\Users\chavis.chen\Desktop\unirtos-app\env_config.json
-# Successfully loaded configuration file: C:\Users\chavis.chen\Desktop\unirtos-app\env_config.json
-# Unirtos common storage directory: C:\Users\chavis.chen\.unirtos
-# INFO: Git tool is valid: git version 2.45.2.windows.1
-
-# ===== Check/Pull SDK =====
-# SDK v1.0.0 already exists and version matches
-
-# ===== Batch Process Dependent Libraries =====
-
-# ===== Skip library processing: 'libraries.list' is missing, not a list, or empty =====
-
-# ===== Environment initialization completed! =====
-# SDK Path: C:\Users\chavis.chen\.unirtos\sdk\v1.0.0
-# Dependent Libraries Paths: No libraries configured
-
-# Note: You can directly reference the above paths in local applications to build projects
-
-# SUCCESS: Environment configuration executed successfully!
-
-# 示例输出（首次拉取时）：
-# INFO: Executing Unirtos environment setup
-# INFO: Configuration file: C:\Users\chavis.chen\Desktop\unirtos-app\env_config.json
-# Successfully loaded configuration file: C:\Users\chavis.chen\Desktop\unirtos-app\env_config.json
-# Unirtos common storage directory: C:\Users\chavis.chen\.unirtos
-# INFO: Git tool is valid: git version 2.45.2.windows.1
-
-# ===== Check/Pull SDK =====
-# SDK v1.0.0 missing/version mismatch, starting pull process...
-# INFO: Using SDK manifest repo URL: https://github.com/unirtos/unirtos-sdk-manifests.git
-# Cloning SDK Manifest repository (main) to: C:\Users\chavis.chen\.unirtos\sdk\manifests
-# Cloning into 'C:\Users\chavis.chen\.unirtos\sdk\manifests'...
-# Syncing SDK v1.0.0 source code...
-# INFO: Syncing 1 projects for SDK v1.0.0 from manifest: C:\Users\chavis.chen\.unirtos\sdk\manifests\v1.0.0\default.xml
-# [1/1] unirtos -> .
-# Cloning into 'C:\Users\chavis.chen\.unirtos\sdk\v1.0.0'...
-# Updating files:  88% (1700/1921)
-# Updating files:  89% (1710/1921)
-# Updating files:  90% (1729/1921)
-# Updating files:  91% (1749/1921)
-# Updating files:  92% (1768/1921)
-# Updating files:  93% (1787/1921)
-# Updating files:  94% (1806/1921)
-# Updating files:  95% (1825/1921)
-# Updating files:  96% (1845/1921)
-# Updating files:  97% (1864/1921)
-# Updating files:  98% (1883/1921)
-# Updating files:  99% (1902/1921)
-# Updating files: 100% (1921/1921)
-# Updating files: 100% (1921/1921), done.
-# HEAD is now at xxxxxxx <commit message>
-# (detached at refs/tags/v1.0.0)
-# SDK v1.0.0 pull completed
-
-# ===== Batch Process Dependent Libraries =====
-
-# ===== Skip library processing: 'libraries.list' is missing, not a list, or empty =====
-
-# ===== Environment initialization completed! =====
-# SDK Path: C:\Users\chavis.chen\.unirtos\sdk\v1.0.0
-# Dependent Libraries Paths: No libraries configured
-
-# Note: You can directly reference the above paths in local applications to build projects
-
-# SUCCESS: Environment configuration executed successfully!
 ```
 
 ---
@@ -375,16 +262,6 @@ unirtos-cli build --module EG800ZCN_LA --jobs 8
 unirtos-cli build -m EG800ZCN_LA -v EG800ZCNLAR01A01_BETA_OCPU_20260513
 ```
 
-**环境变量注入（自动处理，无需手动设置）：**
-
-| 环境变量 | 说明 |
-|----------|------|
-| `UNIRTOS_EXTERNAL_APP_DIR` | 当前应用根目录，让 SDK CMake 找到外部 App |
-| `UNIRTOS_EXTERNAL_APP_NAME` | 应用目录名 |
-| `UNIRTOS_ROOT` | UniRTOS 全局存储根目录 |
-| `UNIRTOS_APP_TARGET_NAME` | 最终目标名（等于 version 字段） |
-| `UNIRTOS_LIBRARIES_JSON` | 依赖库列表（JSON 格式），供 SDK CMake 集成外部库 |
-
 ---
 
 ### 5.5 `clean` — 清理构建产物
@@ -409,7 +286,7 @@ unirtos-cli clean
 
 ### 5.6 `menuconfig` — 打开配置菜单
 
-在 SDK 根目录 `~/.unirtos/sdk/v<version>`（或自定义 `unirtos_root` 下对应目录）启动 `unirtos menuconfig` 交互配置界面。
+内核功能开关配置界面。
 
 ```bash
 unirtos-cli menuconfig [-d <project-dir>]
@@ -417,16 +294,7 @@ unirtos-cli menuconfig [-d <project-dir>]
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `-d`, `--project-dir` | `.`（当前目录） | 起始目录。命令会从该目录向上查找 `env_config.json`，找到后解析 `unirtos_root` 和 `sdk.version`。 |
-
-**行为说明：**
-
-1. 从 `<project-dir>` 开始逐级向上查找 `env_config.json`。
-2. 若找到配置文件，则从中读取 `sdk.version` 并解析 `unirtos_root`。
-3. 若未找到配置文件，则该命令报错，提示需在应用根目录或其子目录中执行，或显式指定 `-d`。
-4. 若 `env_config.json` 中未配置 `unirtos_root`，则使用默认路径，如 `~/.unirtos`。
-5. 组合 SDK 根目录：`<unirtos_root>/sdk/v<sdk.version>`。
-6. 在该目录执行 `unirtos menuconfig`。
+| `-d`, `--project-dir` | `.`（当前目录） | 起始目录（向上查找 `env_config.json` 所在目录）。 |
 
 **示例：**
 
@@ -451,7 +319,7 @@ unirtos-cli version
 **示例输出：**
 
 ```
-unirtos-cli v1.0.12
+unirtos-cli v1.0.13
 ```
 
 ---
@@ -616,25 +484,7 @@ target_include_directories(${target} PUBLIC
 add_subdirectory_if_exist(app_components)
 ```
 
-### 6.2 `depend.config` 如何配置
-
-`depend.config` 用于声明应用依赖的 SDK 能力开关，格式为每行一个 Kconfig 符号：
-
-```config
-CONFIG_QCM_MQTT_FUNC=y
-CONFIG_QCM_VTLS_FUNC=y
-```
-
-规则：
-
-1. 一行一个配置项。
-2. 使用 `CONFIG_XXX=y` 形式。
-3. 支持空行与 `#` 注释。
-4. 只填写应用真实需要的能力项，避免无关配置。
-
-构建时，SDK 会将应用的 `depend.config` 合并进最终配置；若符号无效或不受支持，构建阶段会报错提示。
-
-### 6.3 推荐落地步骤
+### 6.2 推荐落地步骤
 
 ```bash
 # 1) 初始化模板项目
@@ -652,7 +502,7 @@ unirtos-cli env-setup
 unirtos-cli build
 ```
 
-### 6.4 常见失败原因
+### 6.3 常见失败原因
 
 1. `CMakeLists.txt` 未将新增 `.c` 文件加入 `target_sources`，导致链接缺符号。
 2. 头文件目录未加入 `target_include_directories`，导致编译找不到头文件。
@@ -749,15 +599,7 @@ unirtos-cli env-setup
 unirtos-cli build
 ```
 
-### 场景三：在已有项目目录中初始化
-
-```bash
-cd existing-empty-dir
-unirtos-cli init
-# 然后编辑 env_config.json，再执行 env-setup + build
-```
-
-### 场景四：查询可用版本后添加依赖库
+### 场景三：查询可用版本后添加依赖库
 
 ```bash
 # 查看远端有哪些库可用
@@ -776,7 +618,7 @@ unirtos-cli env-setup
 unirtos-cli build
 ```
 
-### 场景五：基于远程 demo 创建项目
+### 场景四：基于远程 demo 创建项目
 
 ```bash
 # 基于远程 demo（自动选择最新版本）创建项目
@@ -801,7 +643,7 @@ unirtos-cli build
 2. 目标目录固定为 `<project-name>-<version>`，即使未显式传 `-v` 也会自动拼接版本号。
 3. 如需强制刷新 demo manifests，可加 `-f`：`unirtos-cli new -r demo_a -f`。
 
-### 场景六：清理后重新编译
+### 场景五：清理后重新编译
 
 ```bash
 unirtos-cli clean

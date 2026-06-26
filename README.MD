@@ -1,6 +1,6 @@
 # UniRTOS CLI 用户使用手册
 
-**版本：** unirtos-cli v1.0.13+  
+**版本：** unirtos-cli v1.0.14+  
 **适用平台：** Windows / Linux / macOS（目前编译工具链仅支持 Windows 系统）
 
 ---
@@ -319,7 +319,7 @@ unirtos-cli version
 **示例输出：**
 
 ```
-unirtos-cli v1.0.13
+unirtos-cli v1.0.14
 ```
 
 ---

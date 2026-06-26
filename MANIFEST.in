@@ -2,5 +2,3 @@ include README.md
 # Include all app-tmpl files (including hidden files like .gitignore)
 recursive-include unirtos_cli/app-tmpl .*
 recursive-include unirtos_cli/app-tmpl *
-# Include tools directory
-recursive-include unirtos_cli/tools *

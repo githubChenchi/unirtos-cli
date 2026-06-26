@@ -453,7 +453,7 @@ unirtos-cli ls-demos -f -j
 
 ## 6. 基于模板的应用接入与编译配置
 
-本节用于说明：执行 `new` 或 `init` 生成模板后，如何按需调整应用侧 `CMakeLists.txt` 和 `depend.config`，确保应用可被 SDK 正确识别并完成编译。
+本节用于说明：执行 `new` 生成模板后，如何按需调整应用侧 `CMakeLists.txt`，确保应用可被 SDK 正确识别并完成编译。
 
 ### 6.1 `CMakeLists.txt` 最小接入要求
 
@@ -493,10 +493,11 @@ cd unirtos-app
 
 # 2) 修改 CMakeLists.txt：补充你的源码/头文件路径
 
-# 3) 按需填写 depend.config：声明能力依赖
-
-# 4) 拉取环境
+# 3) 拉取环境
 unirtos-cli env-setup
+
+# 4) 按需配置 menuconfig
+unirtos-cli menuconfig
 
 # 5) 编译验证
 unirtos-cli build
@@ -506,8 +507,7 @@ unirtos-cli build
 
 1. `CMakeLists.txt` 未将新增 `.c` 文件加入 `target_sources`，导致链接缺符号。
 2. 头文件目录未加入 `target_include_directories`，导致编译找不到头文件。
-3. `depend.config` 未开启必要能力，导致相关 API 或组件不可用。
-4. `depend.config` 填写了错误符号名，触发配置校验失败。
+3. 依赖的底层组件未通过 menuconfig 进行正确配置，导致相关 API 或组件不可用。
 
 ---
 

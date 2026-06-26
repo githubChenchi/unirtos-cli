@@ -1220,8 +1220,6 @@ Usage Examples:
      unirtos-cli new -r demo_a -d /path/to/workspace -f
   3. Create new project from remote demo with version:
      unirtos-cli new -r demo_a -v 1.0.0 -d /path/to/workspace
-  3. Initialize empty directory with templates:
-     mkdir empty-dir && cd empty-dir && unirtos-cli init
   4. Execute environment configuration:
      unirtos-cli env-setup -d /path/to/project
   5. Build project (default 4 parallel jobs):

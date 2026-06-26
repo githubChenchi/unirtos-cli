@@ -207,7 +207,7 @@ unirtos-cli new -r demo_a -v 1.0.0
 
 ---
 
-### 5.3 `env-setup` — 拉取环境
+### 5.2 `env-setup` — 拉取环境
 
 根据 `env_config.json` 的配置，拉取指定版本的 SDK 和所有依赖库到本地存储目录。
 
@@ -228,7 +228,7 @@ unirtos-cli env-setup
 
 ---
 
-### 5.4 `build` — 编译项目
+### 5.3 `build` — 编译项目
 
 调用 UniRTOS 工具链的 `unirtos make` 命令，以 **SDK 驱动** 模式编译当前外部应用。
 
@@ -264,7 +264,7 @@ unirtos-cli build -m EG800ZCN_LA -v EG800ZCNLAR01A01_BETA_OCPU_20260513
 
 ---
 
-### 5.5 `clean` — 清理构建产物
+### 5.4 `clean` — 清理构建产物
 
 删除项目目录下的所有编译产物（`qos_build/` 目录内容）。
 
@@ -284,7 +284,7 @@ unirtos-cli clean
 
 ---
 
-### 5.6 `menuconfig` — 打开配置菜单
+### 5.5 `menuconfig` — 打开配置菜单
 
 内核功能开关配置界面。
 
@@ -308,7 +308,7 @@ unirtos-cli menuconfig -d /path/to/project
 
 ---
 
-### 5.7 `version` — 查看 CLI 版本
+### 5.6 `version` — 查看 CLI 版本
 
 输出当前安装的 unirtos-cli 版本号。
 
@@ -324,7 +324,7 @@ unirtos-cli v1.0.13
 
 ---
 
-### 5.8 `ls-sdk` — 查看 SDK 版本列表
+### 5.7 `ls-sdk` — 查看 SDK 版本列表
 
 列出本地已安装或远程可用的 SDK 版本。
 
@@ -371,7 +371,7 @@ unirtos-cli ls-sdk -r -j
 
 ---
 
-### 5.9 `ls-libs` — 查看库版本列表
+### 5.8 `ls-libs` — 查看库版本列表
 
 列出本地已安装或远程可用的依赖库及其版本。
 
@@ -409,7 +409,7 @@ unirtos-cli ls-libs -r -j
 
 ---
 
-### 5.10 `ls-demos` — 查看 Demo 版本列表
+### 5.9 `ls-demos` — 查看 Demo 版本列表
 
 列出远程 Demo 及其版本。
 

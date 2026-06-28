@@ -571,13 +571,15 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
     
-    # Get branch from config if specified
+    # Get manifest repo URL/branch from config if specified (fallback to official URL)
+    repo_url = env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
     branch = ""
     if config and "sdk" in config:
+        repo_url = config["sdk"].get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
         branch = config["sdk"].get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL, sdk_manifest_root, config, force, specified_branch=branch, silent=silent)
+    sync_manifest_repo(repo_url, sdk_manifest_root, config, force, specified_branch=branch, silent=silent)
     
     # Read version directories
     versions = []
@@ -603,13 +605,15 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
     
-    # Get branch from config if specified
+    # Get manifest repo URL/branch from config if specified (fallback to official URL)
+    repo_url = env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
     branch = ""
     if config and "libraries" in config:
+        repo_url = config["libraries"].get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
         branch = config["libraries"].get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
-    sync_manifest_repo(env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL, lib_manifest_root, config, force, specified_branch=branch, silent=silent)
+    sync_manifest_repo(repo_url, lib_manifest_root, config, force, specified_branch=branch, silent=silent)
     
     # Read library and version directories
     lib_versions = {}

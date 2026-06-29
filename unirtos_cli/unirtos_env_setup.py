@@ -699,6 +699,22 @@ def load_config(config_path):
     print(f"Successfully loaded configuration file: {config_path}", flush=True)
     return config
 
+
+def _require_sdk_config(config: dict, config_label: str = "env_config.json"):
+    """Validate required sdk object and sdk.version in configuration."""
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Invalid configuration format in {config_label}: expected JSON object")
+
+    sdk_config = config.get("sdk")
+    if not isinstance(sdk_config, dict):
+        raise RuntimeError(f"Missing required 'sdk' object in {config_label}")
+
+    sdk_version = str(sdk_config.get("version", "")).strip()
+    if not sdk_version:
+        raise RuntimeError(f"Missing required 'sdk.version' in {config_label}")
+
+    return sdk_config, sdk_version
+
 # ===================== SDK Processing Functions =====================
 def check_sdk_version(config):
     """
@@ -711,7 +727,7 @@ def check_sdk_version(config):
         bool: True if SDK exists and version matches, otherwise False
     """
     unirtos_root = get_unirtos_root(config)
-    sdk_version = config["sdk"]["version"]
+    _, sdk_version = _require_sdk_config(config)
     sdk_dir = unirtos_root / "sdk" / f"v{sdk_version}"
     version_file = sdk_dir / "version.txt"
     
@@ -737,8 +753,7 @@ def pull_sdk(config):
         RuntimeError: Thrown when Manifest XML file for specified version does not exist
     """
     unirtos_root = get_unirtos_root(config)
-    sdk_config = config["sdk"]
-    sdk_version = sdk_config["version"]
+    sdk_config, sdk_version = _require_sdk_config(config)
     sdk_tag = _normalize_version_tag(sdk_version)
 
     sdk_manifest_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
@@ -942,6 +957,7 @@ def main():
         # Parse command-line arguments + load configuration
         args = parse_args()
         config = load_config(args.config)
+        _, sdk_version = _require_sdk_config(config, str(args.config))
         unirtos_root = get_unirtos_root(config)
         print(f"Unirtos common storage directory: {unirtos_root}", flush=True)
         
@@ -959,7 +975,7 @@ def main():
         
         # Output final environment information
         print("\n===== Environment initialization completed! =====", flush=True)
-        sdk_version_dir = f"v{config['sdk']['version']}"
+        sdk_version_dir = f"v{sdk_version}"
         print(f"SDK Path: {unirtos_root / 'sdk' / sdk_version_dir}", flush=True)
         
         # Output the library paths only when both 'libraries' and 'list' are valid

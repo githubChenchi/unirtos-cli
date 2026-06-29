@@ -1,6 +1,6 @@
 # UniRTOS CLI 用户使用手册
 
-**版本：** unirtos-cli v1.0.14+  
+**版本：** unirtos-cli v1.0.15+  
 **适用平台：** Windows / Linux / macOS（目前编译工具链仅支持 Windows 系统）
 
 ---
@@ -77,7 +77,11 @@ unirtos-cli build
 - `sdk.version`：SDK 版本
 - `libraries.list[].name` / `libraries.list[].version`：依赖库名称与版本
 
-其余 Manifest 相关字段（如 `sdk.manifest_repo_url`、`sdk.manifest_repo_branch`、`libraries.manifest_repo_url`、`libraries.manifest_repo_branch`、`demos.manifest_repo_url`、`demos.manifest_repo_branch`）在无私有镜像、内网仓库或特殊分支需求时，建议保持模板默认值，**不要修改**。
+### 切换 git 仓库镜像源
+
+在中国大陆网络环境下，如果拉取代码仓库速度比较慢，甚至无法拉取仓库，可以将`env_config.json`中所有的`manifest_repo_url`的值中的`github`改成`gitee`，unirtos-cli 将会从 gitee 网站拉取仓库。
+
+除此之外，在无私有镜像、内网仓库或特殊分支需求时，请勿将`manifest_repo_url`和`manifest_repo_branch`随意改动，否则会造成无法正确拉取代码仓库。
 
 ### 完整示例
 
@@ -319,7 +323,7 @@ unirtos-cli version
 **示例输出：**
 
 ```
-unirtos-cli v1.0.14
+unirtos-cli v1.0.15
 ```
 
 ---
@@ -491,13 +495,13 @@ add_subdirectory_if_exist(app_components)
 unirtos-cli new unirtos-app
 cd unirtos-app
 
-# 2) 修改 CMakeLists.txt：补充你的源码/头文件路径
-
-# 3) 拉取环境
+# 2) 拉取环境
 unirtos-cli env-setup
 
-# 4) 按需配置 menuconfig
+# 3) 按需配置 menuconfig
 unirtos-cli menuconfig
+
+# 4) 编写代码，并修改 CMakeLists.txt：补充你的源码/头文件路径
 
 # 5) 编译验证
 unirtos-cli build

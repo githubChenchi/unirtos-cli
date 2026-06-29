@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.14"
+DEV_VERSION = "1.0.15"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -574,9 +574,11 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
     # Get manifest repo URL/branch from config if specified (fallback to official URL)
     repo_url = env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
     branch = ""
-    if config and "sdk" in config:
-        repo_url = config["sdk"].get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
-        branch = config["sdk"].get("manifest_repo_branch", "").strip()
+    sdk_cfg = config.get("sdk", {}) if isinstance(config, dict) else {}
+    if not isinstance(sdk_cfg, dict):
+        sdk_cfg = {}
+    repo_url = sdk_cfg.get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
+    branch = sdk_cfg.get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
     sync_manifest_repo(repo_url, sdk_manifest_root, config, force, specified_branch=branch, silent=silent)
@@ -608,9 +610,11 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
     # Get manifest repo URL/branch from config if specified (fallback to official URL)
     repo_url = env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
     branch = ""
-    if config and "libraries" in config:
-        repo_url = config["libraries"].get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
-        branch = config["libraries"].get("manifest_repo_branch", "").strip()
+    libraries_cfg = config.get("libraries", {}) if isinstance(config, dict) else {}
+    if not isinstance(libraries_cfg, dict):
+        libraries_cfg = {}
+    repo_url = libraries_cfg.get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
+    branch = libraries_cfg.get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
     sync_manifest_repo(repo_url, lib_manifest_root, config, force, specified_branch=branch, silent=silent)

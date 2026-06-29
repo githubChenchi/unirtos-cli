@@ -44,6 +44,19 @@ DEV_VERSION = "1.0.15"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
+
+def handle_git_mirror(args: argparse.Namespace) -> None:
+    """Query or set global git mirror configuration."""
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+
+    if args.mirror is None:
+        current = env_setup.read_global_git_mirror()
+        print(current)
+        return
+
+    normalized = env_setup.write_global_git_mirror(args.mirror)
+    print(f"INFO: git mirror set to {normalized}")
+
 # ===================== Core Utility Functions =====================
 def get_os_type() -> str:
     """
@@ -253,18 +266,49 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
     """
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     target_dir.parent.mkdir(parents=True, exist_ok=True)
+
+    def _normalize_git_url(url: str) -> str:
+        s = str(url or "").strip().rstrip("/")
+        if s.endswith(".git"):
+            s = s[:-4]
+        return s
     
     if not (target_dir / ".git").exists():
         # If the repository does not exist: execute git clone
         env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
         return False, False
     else:
+        # If origin URL does not match desired mirror/override URL, re-clone manifest repo.
+        mirror_switched = False
+        current_origin = env_setup.run_command(
+            "git remote get-url origin",
+            cwd=target_dir,
+            check=False,
+            config=config,
+            silent=True,
+        ).strip()
+        if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(repo_url):
+            if not silent:
+                print(
+                    f"INFO: Detected mirror/source change for manifest repo: {target_dir}\n"
+                    f"      from: {current_origin}\n"
+                    f"      to  : {repo_url}\n"
+                    f"      action: remove local manifest repo and re-clone",
+                    flush=True,
+                )
+            shutil.rmtree(target_dir)
+            env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+            mirror_switched = True
+
+        if mirror_switched:
+            return True, False
+
         # If the repository exists: determine whether git pull is needed
         current_time = time.time()
         last_update_time = get_last_git_update_time(target_dir)
         time_diff = current_time - last_update_time
         
-        will_pull = force or time_diff > UPDATE_INTERVAL
+        will_pull = force or mirror_switched or time_diff > UPDATE_INTERVAL
         is_auto_refresh = (not force) and (time_diff > UPDATE_INTERVAL)
         
         if will_pull:
@@ -412,7 +456,7 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
     if not isinstance(demos_cfg, dict):
         demos_cfg = {}
 
-    demo_manifest_url = demos_cfg.get("manifest_repo_url", "").strip() or OFFICIAL_DEMO_MANIFEST_REPO_URL
+    demo_manifest_url = env_setup.resolve_manifest_repo_url(config, "demos")
     demo_manifest_branch = demos_cfg.get("manifest_repo_branch", "").strip()
     demo_manifest_root = unirtos_root / "demos" / "manifests"
 
@@ -572,12 +616,11 @@ def list_remote_sdk_versions(unirtos_root: Path, config: dict = None, force: boo
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
     
     # Get manifest repo URL/branch from config if specified (fallback to official URL)
-    repo_url = env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
+    repo_url = env_setup.resolve_manifest_repo_url(config if isinstance(config, dict) else {}, "sdk")
     branch = ""
     sdk_cfg = config.get("sdk", {}) if isinstance(config, dict) else {}
     if not isinstance(sdk_cfg, dict):
         sdk_cfg = {}
-    repo_url = sdk_cfg.get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_SDK_MANIFEST_REPO_URL
     branch = sdk_cfg.get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
@@ -608,12 +651,11 @@ def list_remote_lib_versions(unirtos_root: Path, config: dict = None, force: boo
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
     
     # Get manifest repo URL/branch from config if specified (fallback to official URL)
-    repo_url = env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
+    repo_url = env_setup.resolve_manifest_repo_url(config if isinstance(config, dict) else {}, "libraries")
     branch = ""
     libraries_cfg = config.get("libraries", {}) if isinstance(config, dict) else {}
     if not isinstance(libraries_cfg, dict):
         libraries_cfg = {}
-    repo_url = libraries_cfg.get("manifest_repo_url", "").strip() or env_setup.OFFICIAL_LIB_MANIFEST_REPO_URL
     branch = libraries_cfg.get("manifest_repo_branch", "").strip()
     
     # Sync manifest repository
@@ -677,7 +719,8 @@ def list_remote_demo_versions(unirtos_root: Path, config: dict = None, force: bo
         demos_cfg = {}
 
     branch = demos_cfg.get("manifest_repo_branch", "").strip()
-    repo_url = demos_cfg.get("manifest_repo_url", "").strip() or OFFICIAL_DEMO_MANIFEST_REPO_URL
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+    repo_url = env_setup.resolve_manifest_repo_url(config if isinstance(config, dict) else {}, "demos")
 
     sync_manifest_repo(repo_url, demo_manifest_root, config, force, specified_branch=branch, silent=silent)
     return list_local_demo_versions(unirtos_root)
@@ -1255,6 +1298,18 @@ Usage Examples:
 
     subparsers = parser.add_subparsers(dest="command", required=True, help="Core commands")
 
+    # Subcommand: git-mirror (global git mirror config)
+    parser_git_mirror = subparsers.add_parser(
+        "git-mirror",
+        help="Query or set global git mirror (github/gitee)"
+    )
+    parser_git_mirror.add_argument(
+        "mirror",
+        nargs="?",
+        choices=["github", "gitee"],
+        help="Mirror name. Omit to query current value."
+    )
+
     # Subcommand: new (project creation)
     parser_new = subparsers.add_parser(
         "new",
@@ -1455,6 +1510,7 @@ def main() -> None:
         args = parser.parse_args()
 
         command_handlers = {
+            "git-mirror": handle_git_mirror,
             "new": handle_new_project,
             "env-setup": handle_env_setup,
             "build": handle_build,

@@ -14,6 +14,7 @@ import sys
 import subprocess
 import tarfile
 import urllib.request
+import shutil
 import json
 import ssl
 from pathlib import Path
@@ -34,6 +35,18 @@ TOOLS_DIR_NAME = "tools"
 REPO_FILE_NAME = "repo"
 OFFICIAL_SDK_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-sdk-manifests.git"
 OFFICIAL_LIB_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-libs-manifests.git"
+OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
+
+DEFAULT_GIT_MIRROR = "github"
+GIT_MIRROR_HOSTS = {
+    "github": "github.com",
+    "gitee": "gitee.com",
+}
+MANIFEST_REPO_PATHS = {
+    "sdk": "unirtos/unirtos-sdk-manifests.git",
+    "libraries": "unirtos/unirtos-libs-manifests.git",
+    "demos": "unirtos/unirtos-demos-manifests.git",
+}
 
 SYSTEM_ENCODING = "gbk" if platform.system() == "Windows" else "utf-8"
 
@@ -137,6 +150,122 @@ def get_unirtos_root(config):
         return Path(home_env).expanduser().absolute() / ".unirtos"
 
     return Path.home().expanduser().absolute() / ".unirtos"
+
+
+def get_global_config_path() -> Path:
+    """Get global mirror config path (~/.unirtos/.unirtosconfig), independent of project config."""
+    if platform.system() == "Windows":
+        userprofile = os.environ.get("USERPROFILE", "").strip()
+        if userprofile:
+            return Path(userprofile).expanduser().absolute() / ".unirtos" / ".unirtosconfig"
+
+        homedrive = os.environ.get("HOMEDRIVE", "").strip()
+        homepath = os.environ.get("HOMEPATH", "").strip()
+        if homedrive and homepath:
+            return Path(f"{homedrive}{homepath}").expanduser().absolute() / ".unirtos" / ".unirtosconfig"
+
+    home_env = os.environ.get("HOME", "").strip()
+    if home_env:
+        return Path(home_env).expanduser().absolute() / ".unirtos" / ".unirtosconfig"
+
+    return Path.home().expanduser().absolute() / ".unirtos" / ".unirtosconfig"
+
+
+def read_global_git_mirror() -> str:
+    """Read git mirror from global config, default to github."""
+    config_path = get_global_config_path()
+    if not config_path.exists():
+        return DEFAULT_GIT_MIRROR
+
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        mirror = str(data.get("git_mirror", "")).strip().lower()
+        if mirror in GIT_MIRROR_HOSTS:
+            return mirror
+    except Exception:
+        pass
+    return DEFAULT_GIT_MIRROR
+
+
+def write_global_git_mirror(mirror: str) -> str:
+    """Write global git mirror config, returns normalized mirror name."""
+    normalized = str(mirror or "").strip().lower()
+    if normalized not in GIT_MIRROR_HOSTS:
+        raise RuntimeError(
+            f"ERROR: Invalid mirror '{mirror}'. Allowed values: github, gitee."
+        )
+
+    config_path = get_global_config_path()
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data = {}
+    if config_path.exists():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+        except Exception:
+            data = {}
+
+    data["git_mirror"] = normalized
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return normalized
+
+
+def get_git_mirror() -> str:
+    """Get current git mirror from global config."""
+    return read_global_git_mirror()
+
+
+def build_manifest_repo_url(repo_type: str) -> str:
+    """Build default manifest repo URL for sdk/libraries/demos by global mirror."""
+    repo_path = MANIFEST_REPO_PATHS.get(repo_type)
+    if not repo_path:
+        raise RuntimeError(f"ERROR: Unsupported manifest repo type: {repo_type}")
+    host = GIT_MIRROR_HOSTS[get_git_mirror()]
+    return f"https://{host}/{repo_path}"
+
+
+def resolve_manifest_repo_url(config: dict, section_name: str) -> str:
+    """Resolve manifest repo URL: explicit non-empty value > mirror configuration logic."""
+    section = config.get(section_name, {}) if isinstance(config, dict) else {}
+    if not isinstance(section, dict):
+        section = {}
+
+    override_url = str(section.get("manifest_repo_url", "")).strip()
+    if override_url:
+        return override_url
+
+    return build_manifest_repo_url(section_name)
+
+
+def _normalize_git_url(url: str) -> str:
+    s = str(url or "").strip().rstrip("/")
+    if s.endswith(".git"):
+        s = s[:-4]
+    return s
+
+
+def _ensure_remote_origin_url(repo_dir: Path, desired_repo_url: str, config: dict, silent: bool = True) -> None:
+    """Ensure repo origin points to desired URL; auto-adjust when mirror changes."""
+    desired = _normalize_git_url(desired_repo_url)
+    if not desired:
+        return
+    current = run_command("git remote get-url origin", cwd=repo_dir, check=False, config=config, silent=True).strip()
+    if not current:
+        return
+    if _normalize_git_url(current) != desired:
+        print(
+            f"INFO: Detected mirror/source change, updating origin URL in {repo_dir}\n"
+            f"      from: {current}\n"
+            f"      to  : {desired_repo_url}",
+            flush=True,
+        )
+        run_command(f"git remote set-url origin {desired_repo_url}", cwd=repo_dir, config=config, silent=silent)
 
 def run_command(cmd, cwd=None, check=True, config=None, silent=False):
     """
@@ -320,6 +449,19 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
         run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
         return
 
+    current_origin = run_command("git remote get-url origin", cwd=target_dir, check=False, config=config, silent=True).strip()
+    if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(repo_url):
+        print(
+            f"INFO: Detected mirror/source change for manifest repo: {target_dir}\n"
+            f"      from: {current_origin}\n"
+            f"      to  : {repo_url}\n"
+            f"      action: remove local manifest repo and re-clone",
+            flush=True,
+        )
+        shutil.rmtree(target_dir)
+        run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+        return
+
     if specified_branch and specified_branch.strip():
         specified_branch = specified_branch.strip()
         run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent)
@@ -338,7 +480,7 @@ def get_latest_sdk_version(config: dict) -> str:
     if not isinstance(sdk_config, dict):
         sdk_config = {}
 
-    repo_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
+    repo_url = resolve_manifest_repo_url(config, "sdk")
     specified_branch = sdk_config.get("manifest_repo_branch", "").strip()
     sdk_manifest_root = unirtos_root / "sdk" / "manifests"
 
@@ -614,6 +756,7 @@ def _sync_projects_from_manifest(
         print(f"[{idx}/{len(projects)}] {project['name']} -> {project['path']}", flush=True)
 
         if (project_path / ".git").exists():
+            _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
             _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config)
         else:
             clone_cmd = ["git", "clone"]
@@ -756,7 +899,7 @@ def pull_sdk(config):
     sdk_config, sdk_version = _require_sdk_config(config)
     sdk_tag = _normalize_version_tag(sdk_version)
 
-    sdk_manifest_url = sdk_config.get("manifest_repo_url", "").strip() or OFFICIAL_SDK_MANIFEST_REPO_URL
+    sdk_manifest_url = resolve_manifest_repo_url(config, "sdk")
     print(f"INFO: Using SDK manifest repo URL: {sdk_manifest_url}", flush=True)
     
     # SDK Manifest root directory (stores entire Master repository)
@@ -804,6 +947,34 @@ def pull_sdk(config):
         f.write(sdk_version)
     print(f"SDK v{sdk_version} pull completed", flush=True)
 
+
+def sync_existing_sdk_repo_remotes(config):
+    """Ensure existing SDK source repos point to current mirror/override URLs."""
+    unirtos_root = get_unirtos_root(config)
+    sdk_config, sdk_version = _require_sdk_config(config)
+
+    sdk_manifest_url = resolve_manifest_repo_url(config, "sdk")
+    sdk_manifest_root = unirtos_root / "sdk" / "manifests"
+    sdk_manifest_dir = sdk_manifest_root / f"v{sdk_version}"
+    sdk_code_dir = unirtos_root / "sdk" / f"v{sdk_version}"
+    branch = sdk_config.get("manifest_repo_branch", "").strip()
+
+    _sync_manifest_repo(sdk_manifest_url, sdk_manifest_root, config, specified_branch=branch, silent=True)
+
+    manifest_file = sdk_manifest_dir / "default.xml"
+    if not manifest_file.exists():
+        print(f"WARNING: SDK manifest not found for remote sync alignment: {manifest_file}", flush=True)
+        return
+
+    if not sdk_code_dir.exists():
+        return
+
+    projects = _collect_manifest_projects(sdk_manifest_root, manifest_file)
+    for project in projects:
+        project_path = sdk_code_dir / project["path"]
+        if (project_path / ".git").exists():
+            _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
+
 # ===================== Library Processing Functions Module =====================
 def check_lib_version(lib_config, unirtos_root):
     """
@@ -843,7 +1014,7 @@ def prepare_lib_manifest_repo(config, unirtos_root):
         Path: Path to library manifest root directory
     """
     # Get library manifest URL (fallback to official URL if not specified)
-    lib_manifest_url = config["libraries"].get("manifest_repo_url", "").strip() or OFFICIAL_LIB_MANIFEST_REPO_URL
+    lib_manifest_url = resolve_manifest_repo_url(config, "libraries")
     lib_manifest_root = unirtos_root / "libraries" / "manifests"
     
     # Ensure parent directory exists
@@ -913,6 +1084,25 @@ def pull_lib(lib_config, unirtos_root, config, lib_manifest_root):
         f.write(lib_version)
     print(f"{lib_name} v{lib_version} pull completed", flush=True)
 
+
+def sync_existing_lib_repo_remotes(lib_config, unirtos_root, config, lib_manifest_root):
+    """Ensure existing library source repos point to current mirror/override URLs."""
+    lib_name = lib_config["name"]
+    lib_version = lib_config["version"]
+
+    lib_manifest_dir = lib_manifest_root / lib_name / f"v{lib_version}"
+    lib_code_dir = unirtos_root / "libraries" / lib_name / f"v{lib_version}"
+    manifest_file = lib_manifest_dir / "default.xml"
+
+    if not manifest_file.exists() or not lib_code_dir.exists():
+        return
+
+    projects = _collect_manifest_projects(lib_manifest_root, manifest_file)
+    for project in projects:
+        project_path = lib_code_dir / project["path"]
+        if (project_path / ".git").exists():
+            _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
+
 def batch_process_libraries(config):
     """
     Batch process all dependent libraries declared in configuration file (version check + pull/update).
@@ -941,6 +1131,8 @@ def batch_process_libraries(config):
         print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
             pull_lib(lib_config, unirtos_root, config, lib_manifest_root)
+        else:
+            sync_existing_lib_repo_remotes(lib_config, unirtos_root, config, lib_manifest_root)
 
 # ===================== Main Process Module =====================
 def main():
@@ -968,6 +1160,8 @@ def main():
         print("\n===== Check/Pull SDK =====", flush=True)
         if not check_sdk_version(config):
             pull_sdk(config)
+        else:
+            sync_existing_sdk_repo_remotes(config)
         
         # Batch process libraries
         print("\n===== Batch Process Dependent Libraries =====", flush=True)

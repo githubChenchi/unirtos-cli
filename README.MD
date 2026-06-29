@@ -79,9 +79,20 @@ unirtos-cli build
 
 ### 切换 git 仓库镜像源
 
-在中国大陆网络环境下，如果拉取代码仓库速度比较慢，甚至无法拉取仓库，可以将`env_config.json`中所有的`manifest_repo_url`的值中的`github`改成`gitee`，unirtos-cli 将会从 gitee 网站拉取仓库。
+使用全局命令配置镜像源：
 
-除此之外，在无私有镜像、内网仓库或特殊分支需求时，请勿将`manifest_repo_url`和`manifest_repo_branch`随意改动，否则会造成无法正确拉取代码仓库。
+```bash
+unirtos-cli git-mirror [<mirror>]
+```
+
+- `<mirror>` 可选值：`github`、`gitee`
+- 省略 `<mirror>`：查询当前配置
+- 若从未配置过：默认值为 `github`
+
+优先级规则：
+
+1. 若 `env_config.json` 中某个对象（`sdk`/`libraries`/`demos`）显式配置了非空 `manifest_repo_url`，该对象使用此 URL。
+2. 若该对象 `manifest_repo_url` 为空字符串或字段缺失，则遵从 `git-mirror` 的配置逻辑解析该 manifest 仓库地址。
 
 ### 完整示例
 
@@ -95,11 +106,11 @@ unirtos-cli build
   },
   "sdk": {
     "version": "1.0.0",
-    "manifest_repo_url": "https://github.com/unirtos/unirtos-sdk-manifests.git",
+    "manifest_repo_url": "",
     "manifest_repo_branch": ""
   },
   "libraries": {
-    "manifest_repo_url": "https://github.com/unirtos/unirtos-libs-manifests.git",
+    "manifest_repo_url": "",
     "manifest_repo_branch": "",
     "list": [
       {
@@ -109,7 +120,7 @@ unirtos-cli build
     ]
   },
   "demos": {
-    "manifest_repo_url": "https://github.com/unirtos/unirtos-demos-manifests.git",
+    "manifest_repo_url": "",
     "manifest_repo_branch": ""
   }
 }
@@ -138,14 +149,14 @@ unirtos-cli build
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `version` | string | **是** | 要使用的 SDK 版本号，例如 `1.0.0`。模板创建场景下会默认写入最新可用版本；`env-setup` 会将该值映射为 SDK Git 标签 `v<version>`（如 `v1.0.0`）进行源码检出并存储。 |
-| `manifest_repo_url` | string | 否 | SDK Manifest 仓库地址。省略时使用官方默认地址。可配置为私有/镜像地址。 |
+| `manifest_repo_url` | string | 否 | SDK Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
 | `manifest_repo_branch` | string | 否 | SDK Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 
 #### `libraries` 对象
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `manifest_repo_url` | string | 否 | 库 Manifest 仓库地址。省略时使用官方默认地址。 |
+| `manifest_repo_url` | string | 否 | 库 Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
 | `manifest_repo_branch` | string | 否 | 库 Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 | `list` | array | 否 | 依赖库列表。每项包含 `name`（库名）和 `version`（版本号）两个字段。不需要任何外部库时可省略 `list` 或置为空数组 `[]`。 |
 
@@ -153,7 +164,7 @@ unirtos-cli build
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `manifest_repo_url` | string | 否 | Demo Manifest 仓库地址。省略时使用官方默认地址。 |
+| `manifest_repo_url` | string | 否 | Demo Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
 | `manifest_repo_branch` | string | 否 | Demo Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 
 ##### 库列表项
@@ -167,7 +178,32 @@ unirtos-cli build
 
 ## 5. 命令参考
 
-### 5.1 `new` — 创建新项目
+### 5.1 `git-mirror` — 查询/设置全局镜像源
+
+```bash
+unirtos-cli git-mirror [<mirror>]
+```
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `mirror` | 省略 | 可选值：`github`、`gitee`。省略时查询当前镜像。 |
+
+**示例：**
+
+```bash
+# 查询当前镜像
+unirtos-cli git-mirror
+
+# 切换到 gitee
+unirtos-cli git-mirror gitee
+
+# 切回 github
+unirtos-cli git-mirror github
+```
+
+---
+
+### 5.2 `new` — 创建新项目
 
 创建一个新的项目。支持两种模式：
 
@@ -211,7 +247,7 @@ unirtos-cli new -r demo_a -v 1.0.0
 
 ---
 
-### 5.2 `env-setup` — 拉取环境
+### 5.3 `env-setup` — 拉取环境
 
 根据 `env_config.json` 的配置，拉取指定版本的 SDK 和所有依赖库到本地存储目录。
 
@@ -232,7 +268,7 @@ unirtos-cli env-setup
 
 ---
 
-### 5.3 `build` — 编译项目
+### 5.4 `build` — 编译项目
 
 调用 UniRTOS 工具链的 `unirtos make` 命令，以 **SDK 驱动** 模式编译当前外部应用。
 
@@ -268,7 +304,7 @@ unirtos-cli build -m EG800ZCN_LA -v EG800ZCNLAR01A01_BETA_OCPU_20260513
 
 ---
 
-### 5.4 `clean` — 清理构建产物
+### 5.5 `clean` — 清理构建产物
 
 删除项目目录下的所有编译产物（`qos_build/` 目录内容）。
 
@@ -288,7 +324,7 @@ unirtos-cli clean
 
 ---
 
-### 5.5 `menuconfig` — 打开配置菜单
+### 5.6 `menuconfig` — 打开配置菜单
 
 内核功能开关配置界面。
 
@@ -312,7 +348,7 @@ unirtos-cli menuconfig -d /path/to/project
 
 ---
 
-### 5.6 `version` — 查看 CLI 版本
+### 5.7 `version` — 查看 CLI 版本
 
 输出当前安装的 unirtos-cli 版本号。
 
@@ -328,7 +364,7 @@ unirtos-cli v1.0.15
 
 ---
 
-### 5.7 `ls-sdk` — 查看 SDK 版本列表
+### 5.8 `ls-sdk` — 查看 SDK 版本列表
 
 列出本地已安装或远程可用的 SDK 版本。
 
@@ -375,7 +411,7 @@ unirtos-cli ls-sdk -r -j
 
 ---
 
-### 5.8 `ls-libs` — 查看库版本列表
+### 5.9 `ls-libs` — 查看库版本列表
 
 列出本地已安装或远程可用的依赖库及其版本。
 
@@ -413,7 +449,7 @@ unirtos-cli ls-libs -r -j
 
 ---
 
-### 5.9 `ls-demos` — 查看 Demo 版本列表
+### 5.10 `ls-demos` — 查看 Demo 版本列表
 
 列出远程 Demo 及其版本。
 

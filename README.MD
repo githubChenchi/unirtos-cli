@@ -89,11 +89,6 @@ unirtos-cli git-mirror [<mirror>]
 - 省略 `<mirror>`：查询当前配置
 - 若从未配置过：默认值为 `github`
 
-优先级规则：
-
-1. 若 `env_config.json` 中某个对象（`sdk`/`libraries`/`demos`）显式配置了非空 `manifest_repo_url`，该对象使用此 URL。
-2. 若该对象 `manifest_repo_url` 为空字符串或字段缺失，则遵从 `git-mirror` 的配置逻辑解析该 manifest 仓库地址。
-
 ### 完整示例
 
 ```json
@@ -105,23 +100,15 @@ unirtos-cli git-mirror [<mirror>]
     "jobs": 8
   },
   "sdk": {
-    "version": "1.0.0",
-    "manifest_repo_url": "",
-    "manifest_repo_branch": ""
+    "version": "1.0.0"
   },
   "libraries": {
-    "manifest_repo_url": "",
-    "manifest_repo_branch": "",
     "list": [
       {
         "name": "lib-name",
         "version": "2.0.0"
       }
     ]
-  },
-  "demos": {
-    "manifest_repo_url": "",
-    "manifest_repo_branch": ""
   }
 }
 ```
@@ -149,23 +136,12 @@ unirtos-cli git-mirror [<mirror>]
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `version` | string | **是** | 要使用的 SDK 版本号，例如 `1.0.0`。模板创建场景下会默认写入最新可用版本；`env-setup` 会将该值映射为 SDK Git 标签 `v<version>`（如 `v1.0.0`）进行源码检出并存储。 |
-| `manifest_repo_url` | string | 否 | SDK Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
-| `manifest_repo_branch` | string | 否 | SDK Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 
 #### `libraries` 对象
 
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
-| `manifest_repo_url` | string | 否 | 库 Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
-| `manifest_repo_branch` | string | 否 | 库 Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 | `list` | array | 否 | 依赖库列表。每项包含 `name`（库名）和 `version`（版本号）两个字段。不需要任何外部库时可省略 `list` 或置为空数组 `[]`。 |
-
-#### `demos` 对象
-
-| 字段 | 类型 | 必填 | 说明 |
-|------|------|------|------|
-| `manifest_repo_url` | string | 否 | Demo Manifest 仓库地址。非空时优先使用该值；为空或缺失时遵从 `git-mirror` 的配置逻辑。 |
-| `manifest_repo_branch` | string | 否 | Demo Manifest 仓库分支名。留空或省略时，按优先级自动尝试：`main` → `master`；填写后优先使用该分支。 |
 
 ##### 库列表项
 

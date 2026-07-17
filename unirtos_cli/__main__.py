@@ -40,7 +40,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.15"
+DEV_VERSION = "1.0.16"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -94,10 +94,9 @@ def get_tmpl_dir() -> Path:
         RuntimeError: If template directory not found in package
     """
     try:
-        with resources.path(PACKAGE_NAME, TMPL_DIR_NAME) as tmpl_path:
-            tmpl_path = tmpl_path.absolute()
-            if tmpl_path.exists() and tmpl_path.is_dir():
-                return tmpl_path
+        tmpl_dir = resources.files(PACKAGE_NAME).joinpath(TMPL_DIR_NAME)
+        if tmpl_dir.is_dir():
+            return tmpl_dir
         raise FileNotFoundError(f"Template directory {TMPL_DIR_NAME} not found in package")
     except Exception as e:
         raise RuntimeError(

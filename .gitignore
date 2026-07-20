@@ -3,3 +3,5 @@ dist
 unirtos-cli.spec
 *.egg-info
 .DS_Store
+unirtos_cli/__pycache__/
+venv/

@@ -22,6 +22,8 @@ import subprocess
 import platform
 import json
 import time
+import threading
+import uuid
 from pathlib import Path
 import argparse
 import importlib.resources as resources
@@ -40,7 +42,7 @@ TMPL_DIR_NAME = "app-tmpl"
 CONFIG_FILE_NAME = "env_config.json"
 PACKAGE_NAME = "unirtos_cli"
 UNIRTOS_CLI_NAME = "unirtos-cli"
-DEV_VERSION = "1.0.16"
+DEV_VERSION = "1.0.17"
 UPDATE_INTERVAL = 3600
 OFFICIAL_DEMO_MANIFEST_REPO_URL = "https://github.com/unirtos/unirtos-demos-manifests.git"
 
@@ -147,15 +149,12 @@ def copy_tmpl_to_target(tmpl_dir: Path, target_dir: Path) -> None:
             if item.is_file():
                 # Preserve file metadata (permissions, timestamps)
                 shutil.copy2(item, target_item)
-                
-                # Enforce executable permission for 'repo' (Linux/macOS only)
-                if item.name == "repo" and get_os_type() != "Windows":
-                    os.chmod(target_item, 0o755)  # RWX for owner, RX for group/others
                 print(f"SUCCESS: Copied template file: {item.name}")
             
             elif item.is_dir():
                 # Recursive directory copy (overwrite existing for consistency)
-                shutil.copytree(item, target_item, dirs_exist_ok=True)
+                # Preserve symlinks or convert to copies based on platform
+                shutil.copytree(item, target_item, dirs_exist_ok=True, symlinks=True)
                 print(f"SUCCESS: Copied template directory: {item.name}/")
         
         print(f"\nINFO: Template files successfully copied to: {target_dir}")
@@ -175,8 +174,13 @@ def get_unirtos_root(config_path: Path = None) -> Path:
     """
     config = {}
     if config_path and config_path.exists():
-        with open(config_path, "r", encoding="utf-8") as f:
-            config = json.load(f)
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except json.JSONDecodeError as e:
+            print(f"WARNING: Failed to parse config file {config_path}: {str(e)}", flush=True)
+        except Exception as e:
+            print(f"WARNING: Failed to read config file {config_path}: {str(e)}", flush=True)
     
     if config.get("unirtos_root") and config["unirtos_root"].strip():
         return Path(config["unirtos_root"]).expanduser().absolute()
@@ -219,6 +223,46 @@ def find_env_config(start_dir: Path) -> Path:
             return None
         current_dir = current_dir.parent
 
+
+def _validate_config(config_file: Path) -> dict:
+    """
+    Validate and load configuration file.
+    
+    Args:
+        config_file: Path to configuration file
+    
+    Returns:
+        dict: Loaded and validated configuration
+    
+    Raises:
+        RuntimeError: If config is invalid or missing required fields
+    """
+    if not config_file.exists():
+        raise RuntimeError(f"Configuration file not found: {config_file}")
+    
+    try:
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise RuntimeError(f"Invalid JSON in config file {config_file}: {str(e)}")
+    except Exception as e:
+        raise RuntimeError(f"Failed to read config file {config_file}: {str(e)}")
+    
+    # Validate required structure
+    if not isinstance(config, dict):
+        raise RuntimeError(f"Config must be a JSON object, got {type(config).__name__}")
+    
+    # Validate SDK section exists and has version
+    sdk_config = config.get("sdk", {})
+    if not isinstance(sdk_config, dict):
+        raise RuntimeError("Config 'sdk' section must be a JSON object")
+    
+    sdk_version = str(sdk_config.get("version", "")).strip()
+    if not sdk_version:
+        raise RuntimeError("Config 'sdk.version' is required but missing or empty")
+    
+    return config
+
 def get_last_git_update_time(repo_dir: Path) -> float:
     """
     Get the timestamp of the last update of the git repository (based on the modification time of the .git/FETCH_HEAD file)
@@ -244,6 +288,24 @@ def get_last_git_update_time(repo_dir: Path) -> float:
     
     return 0.0
 
+def is_valid_git_repo(path: Path) -> bool:
+    """Check if directory is a valid git repository."""
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        result = subprocess.run(
+            "git rev-parse --git-dir",
+            cwd=path,
+            shell=True,
+            check=False,
+            capture_output=True,
+            timeout=5
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
 def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> tuple:
     """
     Clone or update manifest repository (reuse run_command from unirtos_env_setup).
@@ -265,6 +327,9 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
     """
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     target_dir.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Configure git for long paths (important on Windows with git-bash)
+    env_setup._configure_git_for_long_paths()
 
     def _normalize_git_url(url: str) -> str:
         s = str(url or "").strip().rstrip("/")
@@ -272,8 +337,85 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
             s = s[:-4]
         return s
     
-    if not (target_dir / ".git").exists():
-        # If the repository does not exist: execute git clone
+    def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
+        """Remove directory tree with platform-aware retry logic.
+        
+        On Linux/macOS: Uses reference counting, quick simple retry with minimal delay.
+        On Windows: Uses exclusive locking, multi-tier cleanup with git state reset and background deletion.
+        """
+        is_windows = get_os_type() == "Windows"
+        
+        for attempt in range(max_retries):
+            try:
+                shutil.rmtree(path)
+                return
+            except OSError as e:
+                if attempt < max_retries - 1:
+                    # Platform-specific handling
+                    if is_windows:
+                        # Windows: multi-tier strategy
+                        if attempt == 0:
+                            # First attempt: git-level cleanup (doesn't kill any processes)
+                            try:
+                                git_dir = path / ".git"
+                                if git_dir.exists():
+                                    # Reset git state to release file handles
+                                    env_setup.run_command(
+                                        "git clean -fdx && git reset --hard HEAD",
+                                        cwd=path,
+                                        check=False,
+                                        config=None,
+                                        silent=True,
+                                    )
+                                    # Then run gc to optimize and release pack files
+                                    env_setup.run_command(
+                                        "git gc --prune=now",
+                                        cwd=path,
+                                        check=False,
+                                        config=None,
+                                        silent=True,
+                                    )
+                            except Exception:
+                                pass
+                        
+                        elif attempt == 1:
+                            # Second attempt: rename to temporary location
+                            # (allows new clone to start immediately while cleanup happens in background)
+                            try:
+                                temp_path = path.parent / f"{path.name}.delete-{uuid.uuid4().hex[:8]}"
+                                path.rename(temp_path)
+                                # Schedule background deletion (non-blocking)
+                                def cleanup_async():
+                                    try:
+                                        shutil.rmtree(temp_path)
+                                    except Exception:
+                                        pass
+                                thread = threading.Thread(target=cleanup_async, daemon=True)
+                                thread.start()
+                                return  # Success: renamed and queued for deletion
+                            except Exception:
+                                pass
+                        
+                        # Always wait with escalating delay before retry
+                        delay = 0.5 * (attempt + 1)
+                        time.sleep(delay)
+                    else:
+                        # Linux/macOS: reference counting allows fast retry
+                        # Simple short delay due to fast process/lock release
+                        time.sleep(0.1)
+                    continue
+                else:
+                    raise RuntimeError(
+                        f"Failed to remove directory after {max_retries} attempts: {path}\n"
+                        f"Reason: {str(e)}\n"
+                        f"Resolution:\n"
+                        f"  1. Close any editors or IDEs using files in this directory\n"
+                        f"  2. Manually delete: {path}\n"
+                        f"  3. Retry the operation"
+                    ) from e
+    
+    if not is_valid_git_repo(target_dir):
+        # If the repository does not exist or is invalid: execute git clone
         env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
         return False, False
     else:
@@ -295,7 +437,7 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
                     f"      action: remove local manifest repo and re-clone",
                     flush=True,
                 )
-            shutil.rmtree(target_dir)
+            _rmtree_with_retry(target_dir)
             env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
             mirror_switched = True
 
@@ -389,8 +531,14 @@ def _resolve_project_name(raw_name: str) -> str:
             f"ERROR: project-name must be a plain name, not a path: '{name}'\n"
             "Resolution: Use 'unirtos-cli new <project-name> -d <project-dir>' for custom location."
         )
-    if name in {".", ".."}:
-        raise RuntimeError(f"ERROR: invalid project-name: '{name}'")
+    # Security: reject path traversal and reserved names
+    if name in {".", "..", "~", ""}:
+        raise RuntimeError(f"ERROR: invalid project-name: '{name}' (reserved name)")
+    if ".." in name or name.startswith("-"):
+        raise RuntimeError(
+            f"ERROR: invalid project-name: '{name}'\n"
+            "Resolution: Cannot contain '..' or start with '-' character."
+        )
     return name
 
 
@@ -445,7 +593,11 @@ def _select_demo_manifest_file(demo_manifest_root: Path, demo_name: str, request
 
 
 def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool = False, requested_version: str = "") -> None:
-    """Create project by cloning remote demo defined in demos manifest repository."""
+    """
+    Create project by cloning remote demo defined in demos manifest repository.
+    
+    Includes comprehensive error handling and automatic cleanup on failure.
+    """
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
 
     config, config_path = _load_config_for_new(project_dir)
@@ -459,95 +611,179 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
     demo_manifest_branch = demos_cfg.get("manifest_repo_branch", "").strip()
     demo_manifest_root = unirtos_root / "demos" / "manifests"
 
-    demo_manifest_root.parent.mkdir(parents=True, exist_ok=True)
+    target_dir = None  # Will be determined after manifest parsing
     
-    # Check if manifest needs refresh
-    will_refresh = False
-    if not (demo_manifest_root / ".git").exists():
-        print(f"INFO: Cloning demo manifest repository to: {demo_manifest_root}")
-        env_setup.run_command(
-            f"git clone {demo_manifest_url} {demo_manifest_root}",
-            cwd=demo_manifest_root.parent,
-            config=config,
-        )
-    else:
-        # Check timeout: auto-refresh if > 1 hour
-        current_time = time.time()
-        last_update_time = get_last_git_update_time(demo_manifest_root)
-        time_diff = current_time - last_update_time
-        should_refresh = force or time_diff > UPDATE_INTERVAL
+    try:
+        demo_manifest_root.parent.mkdir(parents=True, exist_ok=True)
         
-        if should_refresh:
-            will_refresh = True
-            if not force and time_diff > UPDATE_INTERVAL:
-                # Auto-refresh due to timeout
-                print("INFO: Demo manifest cache expired, refreshing...")
-            if force:
-                print("INFO: Force updating demo manifest repository")
-            
-            sync_manifest_repo(
-                demo_manifest_url,
-                demo_manifest_root,
-                config=config,
-                force=force,
-                specified_branch=demo_manifest_branch,
-                silent=True,
-            )
+        # Check if manifest needs refresh
+        will_refresh = False
+        if not (demo_manifest_root / ".git").exists():
+            print(f"INFO: Cloning demo manifest repository to: {demo_manifest_root}")
+            try:
+                env_setup.run_command(
+                    f"git clone {demo_manifest_url} {demo_manifest_root}",
+                    cwd=demo_manifest_root.parent,
+                    config=config,
+                )
+            except Exception as e:
+                raise RuntimeError(
+                    f"ERROR: Failed to clone demo manifest repository\n"
+                    f"       URL: {demo_manifest_url}\n"
+                    f"       Reason: {str(e)}\n"
+                    f"Resolution: Check network connection and manifest repo URL"
+                )
         else:
-            print(f"INFO: Using local demo manifest repository: {demo_manifest_root}")
+            # Check timeout: auto-refresh if > 1 hour
+            current_time = time.time()
+            last_update_time = get_last_git_update_time(demo_manifest_root)
+            time_diff = current_time - last_update_time
+            should_refresh = force or time_diff > UPDATE_INTERVAL
+            
+            if should_refresh:
+                will_refresh = True
+                if not force and time_diff > UPDATE_INTERVAL:
+                    # Auto-refresh due to timeout
+                    print("INFO: Demo manifest cache expired, refreshing...")
+                if force:
+                    print("INFO: Force updating demo manifest repository")
+                
+                try:
+                    sync_manifest_repo(
+                        demo_manifest_url,
+                        demo_manifest_root,
+                        config=config,
+                        force=force,
+                        specified_branch=demo_manifest_branch,
+                        silent=True,
+                    )
+                except Exception as e:
+                    raise RuntimeError(
+                        f"ERROR: Failed to update demo manifest repository\n"
+                        f"       URL: {demo_manifest_url}\n"
+                        f"       Reason: {str(e)}\n"
+                        f"Resolution: Check network connection and retry with --force"
+                    )
+            else:
+                print(f"INFO: Using local demo manifest repository: {demo_manifest_root}")
 
-    manifest_file, demo_version_dir = _select_demo_manifest_file(
-        demo_manifest_root,
-        project_name,
-        requested_version=requested_version,
-    )
-    demo_version = _strip_version_prefix(demo_version_dir)
-    target_dir = project_dir / f"{project_name}-{demo_version}"
+        # Select demo manifest file (before creating target_dir)
+        try:
+            manifest_file, demo_version_dir = _select_demo_manifest_file(
+                demo_manifest_root,
+                project_name,
+                requested_version=requested_version,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"ERROR: Failed to find demo '{project_name}' in manifest repository\n"
+                f"       Available manifests: {demo_manifest_root}\n"
+                f"       Reason: {str(e)}\n"
+                f"Resolution: Check demo name and version availability"
+            )
+        
+        demo_version = _strip_version_prefix(demo_version_dir)
+        target_dir = project_dir / f"{project_name}-{demo_version}"
 
-    print(f"INFO: Selected demo version: {demo_version}")
-    print(f"INFO: Selected demo manifest: {manifest_file}")
+        print(f"INFO: Selected demo version: {demo_version}")
+        print(f"INFO: Selected demo manifest: {manifest_file}")
 
-    demo_projects = env_setup._collect_manifest_projects(demo_manifest_root, manifest_file)
-    if not demo_projects:
-        raise RuntimeError(f"No projects declared in demo manifest: {manifest_file}")
+        # Collect demo projects from manifest
+        try:
+            demo_projects = env_setup._collect_manifest_projects(demo_manifest_root, manifest_file)
+            if not demo_projects:
+                raise RuntimeError(f"No projects declared in demo manifest: {manifest_file}")
+        except Exception as e:
+            raise RuntimeError(
+                f"ERROR: Failed to parse demo manifest\n"
+                f"       File: {manifest_file}\n"
+                f"       Reason: {str(e)}\n"
+                f"Resolution: Check manifest file format and structure"
+            )
 
-    # Prefer root project path='.'; fallback to first project.
-    root_project = None
-    for p in demo_projects:
-        if p.get("path", "").strip() in {".", ""}:
-            root_project = p
-            break
-    if root_project is None:
-        root_project = demo_projects[0]
+        # Prefer root project path='.'; fallback to first project.
+        root_project = None
+        for p in demo_projects:
+            if p.get("path", "").strip() in {".", ""}:
+                root_project = p
+                break
+        if root_project is None:
+            root_project = demo_projects[0]
 
-    repo_url = root_project.get("url", "").strip()
-    if not repo_url:
-        raise RuntimeError(f"Invalid demo repo URL in manifest: {manifest_file}")
+        repo_url = root_project.get("url", "").strip()
+        if not repo_url:
+            raise RuntimeError(
+                f"ERROR: Invalid demo repository URL in manifest\n"
+                f"       File: {manifest_file}\n"
+                f"Resolution: Check manifest file and ensure project has valid URL"
+            )
 
-    if target_dir.exists() and not is_dir_empty(target_dir):
-        raise RuntimeError(
-            f"ERROR: Project directory exists and is non-empty: {target_dir}\n"
-            "Resolution: Use a new project name or delete the existing directory."
-        )
+        # Check target directory
+        if target_dir.exists() and not is_dir_empty(target_dir):
+            raise RuntimeError(
+                f"ERROR: Project directory exists and is non-empty: {target_dir}\n"
+                "Resolution: Use a new project name or delete the existing directory."
+            )
 
-    target_dir.parent.mkdir(parents=True, exist_ok=True)
-    print(f"INFO: Cloning demo repository: {repo_url}")
-    env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config)
+        target_dir.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Clone demo repository
+        print(f"INFO: Cloning demo repository: {repo_url}")
+        try:
+            env_setup.run_command(
+                f"git clone {repo_url} {target_dir}",
+                cwd=target_dir.parent,
+                config=config
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"ERROR: Failed to clone demo repository\n"
+                f"       URL: {repo_url}\n"
+                f"       Target: {target_dir}\n"
+                f"       Reason: {str(e)}\n"
+                f"Resolution: Check network connection and repository URL"
+            )
 
-    demo_version_tag = _normalize_version_tag(demo_version_dir)
-    env_setup._checkout_revision(
-        target_dir,
-        root_project.get("revision", ""),
-        config,
-        prefer_tag=True,
-        version_tag=demo_version_tag,
-    )
+        # Checkout specific revision/tag
+        demo_version_tag = _normalize_version_tag(demo_version_dir)
+        try:
+            env_setup._checkout_revision(
+                target_dir,
+                root_project.get("revision", ""),
+                config,
+                prefer_tag=True,
+                version_tag=demo_version_tag,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"ERROR: Failed to checkout demo revision/tag\n"
+                f"       Directory: {target_dir}\n"
+                f"       Version: {demo_version}\n"
+                f"       Reason: {str(e)}\n"
+                f"Resolution: Check if version tag exists in repository"
+            )
 
-    print(f"\nSUCCESS: Demo project '{project_name}-{demo_version}' created successfully from remote repo!")
-    print("GUIDANCE:")
-    print(f"  1. Navigate to project directory: cd {target_dir}")
-    print("  2. Execute environment configuration: unirtos-cli env-setup")
-    print("  3. Build project: unirtos-cli build")
+        print(f"\nSUCCESS: Demo project '{project_name}-{demo_version}' created successfully from remote repo!")
+        print("GUIDANCE:")
+        print(f"  1. Navigate to project directory: cd {target_dir}")
+        print("  2. Execute environment configuration: unirtos-cli env-setup")
+        print("  3. Build project: unirtos-cli build")
+
+    except Exception as e:
+        # Cleanup: Remove incomplete target directory on any failure
+        if target_dir and target_dir.exists():
+            try:
+                print(f"INFO: Cleaning up incomplete project directory: {target_dir}")
+                shutil.rmtree(target_dir)
+            except Exception as cleanup_err:
+                print(
+                    f"WARNING: Failed to clean up directory: {target_dir}\n"
+                    f"         Reason: {str(cleanup_err)}\n"
+                    f"         Please manually remove it or retry with --force",
+                    flush=True
+                )
+        # Re-raise the original error with context
+        raise RuntimeError(str(e)) from e
 
 def list_local_sdk_versions(unirtos_root: Path) -> list:
     """
@@ -814,14 +1050,27 @@ def handle_new_project(args: argparse.Namespace) -> None:
         target_dir.mkdir(parents=True, exist_ok=True)
         print(f"INFO: Created new Unirtos project directory: {target_dir}")
 
-    # Deploy templates
+    # Deploy templates (with rollback on failure)
     print(f"INFO: Deploying Unirtos templates...")
     tmpl_dir = get_tmpl_dir()
-    copy_tmpl_to_target(tmpl_dir, target_dir)
+    try:
+        copy_tmpl_to_target(tmpl_dir, target_dir)
+    except Exception as e:
+        # Rollback: Remove incomplete directory on failure
+        try:
+            shutil.rmtree(target_dir)
+        except Exception:
+            pass
+        raise RuntimeError(f"ERROR: Template deployment failed: {str(e)}") from e
 
     # Validate critical files
     config_file = target_dir / CONFIG_FILE_NAME
     if not config_file.exists():
+        # Rollback on missing critical file
+        try:
+            shutil.rmtree(target_dir)
+        except Exception:
+            pass
         error_guide = "\n".join([
             "Corrective Actions:",
             f"1. Manually restore {CONFIG_FILE_NAME} to: {target_dir}",
@@ -831,21 +1080,40 @@ def handle_new_project(args: argparse.Namespace) -> None:
             f"ERROR: Critical Unirtos file missing: {CONFIG_FILE_NAME}\n{error_guide}"
         )
 
-    # Update SDK version in config
-    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
-    with open(config_file, "r", encoding="utf-8") as f:
-        config = json.load(f)
+    # Update SDK version in config (with detailed error logging)
+    try:
+        env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
+        with open(config_file, "r", encoding="utf-8") as f:
+            config = json.load(f)
 
-    latest_sdk_version = env_setup.get_latest_sdk_version(config)
-    sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
-    if not isinstance(sdk_config, dict):
-        sdk_config = {}
-    sdk_config["version"] = latest_sdk_version
-    config["sdk"] = sdk_config
+        try:
+            latest_sdk_version = env_setup.get_latest_sdk_version(config)
+            # Ensure version is stored without 'v' prefix for consistency
+            latest_sdk_version = env_setup._strip_version_prefix(latest_sdk_version)
+        except Exception as sdk_err:
+            print(
+                f"WARNING: Failed to fetch latest SDK version from manifest repo: {str(sdk_err)}\n"
+                f"         Using default SDK version: {config.get('sdk', {}).get('version', 'unknown')}",
+                flush=True
+            )
+            raise
+        
+        sdk_config = config.get("sdk", {}) if isinstance(config, dict) else {}
+        if not isinstance(sdk_config, dict):
+            sdk_config = {}
+        sdk_config["version"] = latest_sdk_version
+        config["sdk"] = sdk_config
 
-    with open(config_file, "w", encoding="utf-8") as f:
-        json.dump(config, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+    except Exception as e:
+        # Rollback on SDK update failure
+        try:
+            shutil.rmtree(target_dir)
+        except Exception:
+            pass
+        raise RuntimeError(f"ERROR: Failed to initialize SDK version: {str(e)}") from e
 
     print(f"\nSUCCESS: Unirtos project '{project_name}' created successfully!")
     print("GUIDANCE:")
@@ -878,9 +1146,15 @@ def handle_env_setup(args: argparse.Namespace) -> None:
         # Import package-internal setup module
         env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
         
-        # Mock command line arguments for setup module
-        sys.argv = [sys.argv[0], "--config", str(config_file)]
-        env_setup.main()
+        # Preserve and restore sys.argv to prevent state pollution
+        original_argv = sys.argv.copy()
+        try:
+            # Mock command line arguments for setup module
+            sys.argv = [sys.argv[0], "--config", str(config_file)]
+            env_setup.main()
+        finally:
+            # Always restore sys.argv
+            sys.argv = original_argv
         
         print(f"\nSUCCESS: Environment configuration executed successfully!")
     except Exception as e:
@@ -900,9 +1174,11 @@ def handle_build(args: argparse.Namespace) -> None:
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
     config_file = project_dir / CONFIG_FILE_NAME
 
-    # Validate prerequisites
-    if not config_file.exists():
-        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
+    # Validate prerequisites (including config content)
+    try:
+        config = _validate_config(config_file)
+    except RuntimeError:
+        raise  # Re-raise validation errors
 
     print(f"INFO: Starting Unirtos project build")
     print(f"INFO: Project directory: {project_dir}")
@@ -912,27 +1188,30 @@ def handle_build(args: argparse.Namespace) -> None:
         # Import package-internal build module
         build_module = importlib.import_module("unirtos_cli.build")
         
-        # Override sys.argv to pass build arguments to the module
-        sys.argv = [
-            sys.argv[0],
-        ]
-
-        if args.jobs is not None:
-            sys.argv.extend(["--jobs", str(args.jobs)])
-        if args.module:
-            sys.argv.extend(["--module", args.module])
-        if args.version:
-            sys.argv.extend(["--version", args.version])
-        
-        # Set working directory to project directory (critical for CMake)
+        # Preserve original state to prevent pollution
+        original_argv = sys.argv.copy()
         original_cwd = os.getcwd()
-        os.chdir(project_dir)
         
-        # Execute build module
-        build_module.main()
-        
-        # Restore original working directory
-        os.chdir(original_cwd)
+        try:
+            # Override sys.argv to pass build arguments to the module
+            sys.argv = [sys.argv[0]]
+
+            if args.jobs is not None:
+                sys.argv.extend(["--jobs", str(args.jobs)])
+            if args.module:
+                sys.argv.extend(["--module", args.module])
+            if args.version:
+                sys.argv.extend(["--version", args.version])
+            
+            # Set working directory to project directory (critical for CMake)
+            os.chdir(project_dir)
+            
+            # Execute build module
+            build_module.main()
+        finally:
+            # Always restore original state
+            sys.argv = original_argv
+            os.chdir(original_cwd)
         
         print(f"\nSUCCESS: Unirtos project built successfully!")
     except Exception as e:
@@ -952,9 +1231,11 @@ def handle_clean(args: argparse.Namespace) -> None:
     project_dir = Path(args.project_dir).absolute() if args.project_dir else Path.cwd()
     config_file = project_dir / CONFIG_FILE_NAME
 
-    # Validate prerequisites
-    if not config_file.exists():
-        raise RuntimeError(f"ERROR: Configuration file not found: {config_file}\nRun 'unirtos-cli init' first.")
+    # Validate prerequisites (including config content)
+    try:
+        config = _validate_config(config_file)
+    except RuntimeError:
+        raise  # Re-raise validation errors
 
     print(f"INFO: Starting build artifact cleanup")
     print(f"INFO: Project directory: {project_dir}")

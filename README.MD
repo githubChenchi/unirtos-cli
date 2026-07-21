@@ -1,6 +1,6 @@
 # UniRTOS CLI 用户使用手册
 
-**版本：** unirtos-cli v1.0.16+
+**版本：** unirtos-cli v1.0.17+
 **适用平台：** Windows / Linux / macOS（目前编译工具链仅支持 Windows 系统）
 
 ---
@@ -12,7 +12,7 @@
 | 工具 | 说明 | 最低版本 |
 |------|------|----------|
 | **Python** | 运行 CLI 工具本身 | 3.9+ |
-| **Git** | 拉取 SDK 与库源码 | 2.20+ |
+| **Git** | 拉取 SDK 与库源码 | 2.40+ |
 | **unirtos 工具链** | 提供 `unirtos` 命令用于编译 | 1.0.5+ |
 
 验证命令：
@@ -335,7 +335,7 @@ unirtos-cli version
 **示例输出：**
 
 ```
-unirtos-cli v1.0.16
+unirtos-cli v1.0.17
 ```
 
 ---

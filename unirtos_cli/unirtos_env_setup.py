@@ -17,6 +17,9 @@ import urllib.request
 import shutil
 import json
 import ssl
+import time
+import threading
+import uuid
 from pathlib import Path
 import platform
 import xml.etree.ElementTree as ET
@@ -24,9 +27,15 @@ import argparse
 import importlib.resources as resources
 from urllib.parse import urlparse
 import re
+try:
+    import certifi
+except ImportError:
+    certifi = None
 
-# Disable SSL certificate verification for GitHub resource download
-ssl._create_default_https_context = ssl._create_unverified_context
+# SSL certificate verification: Use certifi for security, only disable for specific trusted URLs
+if certifi:
+    ssl._create_default_https_context = ssl.create_default_context(cafile=certifi.where())
+# Note: For GitHub/Gitee git operations, use git's built-in SSL handling which respects system certificates
 
 # ===================== Core Configuration =====================
 PACKAGE_NAME = "unirtos_cli"
@@ -48,7 +57,9 @@ MANIFEST_REPO_PATHS = {
     "demos": "unirtos/unirtos-demos-manifests.git",
 }
 
-SYSTEM_ENCODING = "gbk" if platform.system() == "Windows" else "utf-8"
+# Use UTF-8 universally for git commands (cross-platform compatibility)
+# Individual tools may use different encodings for other purposes
+GIT_ENCODING = "utf-8"
 
 # ===================== Command-line Argument Parsing =====================
 def parse_args():
@@ -255,7 +266,11 @@ def _ensure_remote_origin_url(repo_dir: Path, desired_repo_url: str, config: dic
     desired = _normalize_git_url(desired_repo_url)
     if not desired:
         return
-    current = run_command("git remote get-url origin", cwd=repo_dir, check=False, config=config, silent=True).strip()
+    try:
+        current = run_command("git remote get-url origin", cwd=repo_dir, check=False, config=config, silent=True, timeout=10).strip()
+    except Exception:
+        # If we can't get current URL, skip validation
+        return
     if not current:
         return
     if _normalize_git_url(current) != desired:
@@ -265,18 +280,23 @@ def _ensure_remote_origin_url(repo_dir: Path, desired_repo_url: str, config: dic
             f"      to  : {desired_repo_url}",
             flush=True,
         )
-        run_command(f"git remote set-url origin {desired_repo_url}", cwd=repo_dir, config=config, silent=silent)
+        try:
+            run_command(f"git remote set-url origin {desired_repo_url}", cwd=repo_dir, config=config, silent=silent, timeout=10)
+        except Exception as e:
+            if not silent:
+                print(f"WARNING: Failed to update origin URL: {str(e)}", flush=True)
 
-def run_command(cmd, cwd=None, check=True, config=None, silent=False):
+def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=None):
     """
     Cross-platform execution of shell commands.
-	
+    
     Args:
         cmd (str): Command string to be executed
         cwd (Path, optional): Working directory for command execution
         check (bool, optional): Whether to check command execution result
         config (dict, optional): Env config dict
         silent (bool, optional): Whether to suppress output. Default is False.
+        timeout (int, optional): Timeout in seconds for command execution
     
     Returns:
         str: Standard output content of command execution
@@ -285,50 +305,64 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False):
         CalledProcessError: When command execution fails
     """
     env = os.environ.copy()
-
+    # Use UTF-8 for git commands (cross-platform compatibility)
+    # Use platform encoding for other commands
+    is_git_cmd = bool(re.search(r"\bgit\b", cmd))
+    encoding = GIT_ENCODING if is_git_cmd else ("gbk" if platform.system() == "Windows" else "utf-8")
     stream_git_progress = bool(re.search(r"\bgit\s+(clone|pull|fetch|checkout)\b", cmd))
     
     try:
         if stream_git_progress:
-            process = subprocess.Popen(
+            try:
+                process = subprocess.Popen(
+                    cmd,
+                    cwd=cwd,
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    encoding=encoding,
+                    errors="replace",
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+                    bufsize=1,
+                )
+
+                output_lines = []
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        if not silent:
+                            print(line, end="", flush=True)
+
+                return_code = process.wait(timeout=timeout) if timeout else process.wait()
+                output = "".join(output_lines)
+                if check and return_code != 0:
+                    raise subprocess.CalledProcessError(return_code, cmd, output=output, stderr="")
+                return output
+            except subprocess.TimeoutExpired:
+                process.kill()
+                if not silent:
+                    print(f"WARNING: Command timed out after {timeout}s: {cmd}", flush=True)
+                raise RuntimeError(f"Command timeout after {timeout}s: {cmd}")
+        else:
+            result = subprocess.run(
                 cmd,
                 cwd=cwd,
                 shell=True,
+                check=check,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                encoding=SYSTEM_ENCODING,
+                stderr=subprocess.PIPE,
+                encoding=encoding,
                 errors="replace",
                 env=env,
-                creationflags=0,
-                bufsize=1,
+                timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
             )
-
-            output_lines = []
-            if process.stdout is not None:
-                for line in process.stdout:
-                    output_lines.append(line)
-                    if not silent:
-                        print(line, end="", flush=True)
-
-            return_code = process.wait()
-            output = "".join(output_lines)
-            if check and return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd, output=output, stderr="")
-            return output
-
-        result = subprocess.run(
-            cmd,
-            cwd=cwd,
-            shell=True,
-            check=check,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding=SYSTEM_ENCODING,
-            errors="replace",
-            env=env,
-            creationflags=0
-        )
-        return result.stdout
+            return result.stdout
+    except subprocess.TimeoutExpired:
+        if not silent:
+            print(f"WARNING: Command timed out after {timeout}s: {cmd}", flush=True)
+        raise RuntimeError(f"Command timeout after {timeout}s: {cmd}")
     except subprocess.CalledProcessError as e:
         if not silent:
             print(f"Command execution failed: {cmd}", flush=True)
@@ -346,7 +380,7 @@ def check_git_installed(config):
         RuntimeError: When git is missing/invalid
     """
     try:
-        version = run_command("git --version", check=True, config=config).strip()
+        version = run_command("git --version", check=True, config=config, timeout=10).strip()
         print(f"INFO: Git tool is valid: {version}", flush=True)
     except Exception as e:
         raise RuntimeError(
@@ -355,9 +389,25 @@ def check_git_installed(config):
         )
 
 
-def _run_command_list(cmd_list, cwd=None, config=None):
-    """Run command as list (no shell interpolation issues)."""
+def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None):
+    """Run command as list (no shell interpolation issues).
+    
+    Args:
+        cmd_list: Command as list
+        cwd: Working directory
+        config: Config dict (unused but for consistency)
+        check: Whether to raise exception on non-zero exit code
+        timeout: Timeout in seconds
+    
+    Returns:
+        str: Command output
+    
+    Raises:
+        RuntimeError: On timeout or (if check=True) on command failure
+    """
     env = os.environ.copy()
+    # Use UTF-8 for git commands
+    encoding = GIT_ENCODING
     stream_git_progress = (
         len(cmd_list) >= 2
         and cmd_list[0] == "git"
@@ -366,46 +416,55 @@ def _run_command_list(cmd_list, cwd=None, config=None):
 
     try:
         if stream_git_progress:
-            process = subprocess.Popen(
+            try:
+                process = subprocess.Popen(
+                    cmd_list,
+                    cwd=cwd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    encoding=encoding,
+                    errors="replace",
+                    env=env,
+                    creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
+                    bufsize=1,
+                )
+
+                output_lines = []
+                if process.stdout is not None:
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        print(line, end="", flush=True)
+
+                return_code = process.wait(timeout=timeout) if timeout else process.wait()
+                output = "".join(output_lines)
+                if check and return_code != 0:
+                    raise subprocess.CalledProcessError(return_code, cmd_list, output=output, stderr="")
+                return output
+            except subprocess.TimeoutExpired:
+                process.kill()
+                raise RuntimeError(f"Command timeout after {timeout}s: {' '.join(cmd_list)}")
+        else:
+            result = subprocess.run(
                 cmd_list,
                 cwd=cwd,
+                check=check,
                 stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                encoding=SYSTEM_ENCODING,
+                stderr=subprocess.PIPE,
+                encoding=encoding,
                 errors="replace",
                 env=env,
-                creationflags=0,
-                bufsize=1,
+                timeout=timeout,
+                creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
             )
-
-            output_lines = []
-            if process.stdout is not None:
-                for line in process.stdout:
-                    output_lines.append(line)
-                    print(line, end="", flush=True)
-
-            return_code = process.wait()
-            output = "".join(output_lines)
-            if return_code != 0:
-                raise subprocess.CalledProcessError(return_code, cmd_list, output=output, stderr="")
-            return output
-
-        result = subprocess.run(
-            cmd_list,
-            cwd=cwd,
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            encoding=SYSTEM_ENCODING,
-            errors="replace",
-            env=env,
-            creationflags=0,
-        )
-        return result.stdout
+            return result.stdout
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"Command timeout after {timeout}s: {' '.join(cmd_list)}")
     except subprocess.CalledProcessError as e:
-        print(f"Command execution failed: {' '.join(cmd_list)}", flush=True)
-        print(f"Error message: {(e.stderr or '').strip()}", flush=True)
-        raise
+        if check:
+            print(f"Command execution failed: {' '.join(cmd_list)}", flush=True)
+            print(f"Error message: {(e.stderr or '').strip()}", flush=True)
+            raise
+        return e.stdout or ""
 
 
 def _looks_like_commit(revision: str) -> bool:
@@ -441,15 +500,142 @@ def _parse_version_key(version_name: str):
     return key
 
 
+def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
+    """Remove directory tree with platform-aware retry logic for file lock issues.
+    
+    On Linux/macOS: Uses reference counting, quick simple retry with minimal delay.
+    On Windows: Uses exclusive locking, multi-tier cleanup with git state reset and background deletion.
+    """
+    is_windows = platform.system() == "Windows"
+    
+    for attempt in range(max_retries):
+        try:
+            shutil.rmtree(path)
+            return
+        except OSError as e:
+            if attempt < max_retries - 1:
+                # Platform-specific handling
+                if is_windows:
+                    # Windows: multi-tier strategy
+                    if attempt == 0:
+                        # First attempt: git-level cleanup (doesn't kill any processes)
+                        try:
+                            git_dir = path / ".git"
+                            if git_dir.exists():
+                                # Reset git state to release file handles (with timeout)
+                                run_command(
+                                    "git clean -fdx && git reset --hard HEAD",
+                                    cwd=path,
+                                    check=False,
+                                    config=None,
+                                    silent=True,
+                                    timeout=5,
+                                )
+                                # Then run gc to optimize and release pack files (with timeout)
+                                run_command(
+                                    "git gc --prune=now",
+                                    cwd=path,
+                                    check=False,
+                                    config=None,
+                                    silent=True,
+                                    timeout=10,
+                                )
+                        except Exception:
+                            pass
+                    
+                    elif attempt == 1:
+                        # Second attempt: rename to temporary location
+                        # (allows new clone to start immediately while cleanup happens in background)
+                        try:
+                            temp_path = path.parent / f"{path.name}.delete-{uuid.uuid4().hex[:8]}"
+                            path.rename(temp_path)
+                            # Schedule background deletion (non-blocking)
+                            def cleanup_async():
+                                try:
+                                    shutil.rmtree(temp_path)
+                                except Exception:
+                                    pass
+                            thread = threading.Thread(target=cleanup_async, daemon=True)
+                            thread.start()
+                            return  # Success: renamed and queued for deletion
+                        except Exception:
+                            pass
+                    
+                    # Always wait with escalating delay before retry
+                    delay = 0.5 * (attempt + 1)
+                    time.sleep(delay)
+                else:
+                    # Linux/macOS: reference counting allows fast retry
+                    # Simple short delay due to fast process/lock release
+                    time.sleep(0.1)
+                continue
+            else:
+                raise RuntimeError(
+                    f"Failed to remove directory after {max_retries} attempts: {path}\n"
+                    f"Reason: {str(e)}\n"
+                    f"Resolution:\n"
+                    f"  1. Close any editors or IDEs using files in this directory\n"
+                    f"  2. Manually delete: {path}\n"
+                    f"  3. Retry the operation"
+                ) from e
+
+
+def is_valid_git_repo(path: Path) -> bool:
+    """Check if directory is a valid git repository."""
+    git_dir = path / ".git"
+    if not git_dir.exists():
+        return False
+    try:
+        run_command("git rev-parse --git-dir", cwd=path, check=True, config=None, silent=True)
+        return True
+    except Exception:
+        return False
+
+
+def to_windows_long_path(path: Path) -> str:
+    """
+    Convert path to Windows long path format if needed.
+    Note: This only applies to direct Windows API calls, NOT for git commands.
+    For git, use: git config --global core.longpaths true
+    """
+    p = str(path.absolute())
+    # Only use \\?\ format for Windows API, not for git or MSYS2/git-bash
+    if os.name == 'nt' and len(p) > 260:
+        # Check if running under git-bash/MSYS2
+        if 'MSYSTEM' not in os.environ:  # Not in MSYS2/git-bash
+            if not p.startswith('\\\\?\\'):
+                return '\\\\?\\' + p
+    return p
+
+
+
+def _configure_git_for_long_paths() -> None:
+    """Configure git to handle long paths on Windows/git-bash."""
+    if get_os_type() == "Windows":
+        try:
+            # Enable git long paths support (git 2.40+)
+            run_command("git config --global core.longpaths true", check=False, silent=True)
+        except Exception:
+            pass  # Ignore if git is not available
+
+
 def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified_branch: str = "", silent: bool = True) -> None:
     """Clone or update a manifest repository without emitting user-facing logs."""
     target_dir.parent.mkdir(parents=True, exist_ok=True)
 
-    if not (target_dir / ".git").exists():
-        run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+    # Improved validation: check if it's a valid git repo, not just .git existence
+    if not is_valid_git_repo(target_dir):
+        try:
+            run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent, timeout=480)
+        except Exception as e:
+            raise RuntimeError(f"Failed to clone manifest repo: {str(e)}")
         return
 
-    current_origin = run_command("git remote get-url origin", cwd=target_dir, check=False, config=config, silent=True).strip()
+    try:
+        current_origin = run_command("git remote get-url origin", cwd=target_dir, check=False, config=config, silent=True, timeout=10).strip()
+    except Exception:
+        current_origin = ""
+    
     if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(repo_url):
         print(
             f"INFO: Detected mirror/source change for manifest repo: {target_dir}\n"
@@ -458,19 +644,28 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
             f"      action: remove local manifest repo and re-clone",
             flush=True,
         )
-        shutil.rmtree(target_dir)
-        run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+        _rmtree_with_retry(target_dir)
+        try:
+            run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent, timeout=480)
+        except Exception as e:
+            raise RuntimeError(f"Failed to re-clone manifest repo after mirror change: {str(e)}")
         return
 
     if specified_branch and specified_branch.strip():
         specified_branch = specified_branch.strip()
-        run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent)
+        try:
+            run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent, timeout=300)
+        except Exception as e:
+            raise RuntimeError(f"Failed to pull from branch {specified_branch}: {str(e)}")
         return
 
     try:
-        run_command("git pull origin main", cwd=target_dir, config=config, silent=silent)
-    except Exception:
-        run_command("git pull origin master", cwd=target_dir, config=config, silent=silent)
+        run_command("git pull origin main", cwd=target_dir, config=config, silent=silent, timeout=300)
+    except Exception as main_err:
+        try:
+            run_command("git pull origin master", cwd=target_dir, config=config, silent=silent, timeout=300)
+        except Exception as master_err:
+            raise RuntimeError(f"Failed to pull from both main and master: main={str(main_err)}, master={str(master_err)}")
 
 
 def get_latest_sdk_version(config: dict) -> str:
@@ -493,9 +688,14 @@ def get_latest_sdk_version(config: dict) -> str:
                 version_dirs.append(item.name)
 
     if not version_dirs:
-        raise RuntimeError(f"No valid SDK versions found in manifest repository: {sdk_manifest_root}")
+        raise RuntimeError(
+            f"No valid SDK versions found in manifest repository: {sdk_manifest_root}\n"
+            f"Resolution: Ensure manifest repository has at least one SDK version directory (v<version>/default.xml)\n"
+            f"Manifest repo URL: {repo_url}"
+        )
 
     version_dirs.sort(key=_parse_version_key, reverse=True)
+    # Always return version without 'v' prefix for config storage
     return _strip_version_prefix(version_dirs[0])
 
 
@@ -606,7 +806,17 @@ def _collect_manifest_projects(manifest_root: Path, manifest_file: Path):
         if not path.exists():
             raise RuntimeError(f"Manifest file not found: {path}")
 
-        tree = ET.parse(path)
+        # Explicitly handle UTF-8 encoding for XML parsing
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                tree = ET.parse(f)
+        except UnicodeDecodeError:
+            # Fallback: try with system encoding
+            try:
+                with open(path, 'r', encoding='gbk' if platform.system() == "Windows" else 'utf-8') as f:
+                    tree = ET.parse(f)
+            except Exception as e:
+                raise RuntimeError(f"Failed to parse manifest {path}: {str(e)}")
         root = tree.getroot()
         if root.tag != "manifest":
             raise RuntimeError(f"Invalid manifest root in {path}, expected <manifest>")
@@ -684,12 +894,14 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
         return False
 
     try:
-        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir, config=config)
+        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir, config=config, timeout=30)
     except Exception:
         return False
 
-    _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir, config=config)
-    return True
+    try:
+        _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir, config=config, timeout=30)
+    except Exception:
+        return False
 
 
 def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: bool = False, version_tag: str = ""):
@@ -709,7 +921,7 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
 
     if revision.startswith("refs/heads/"):
         branch = revision.split("refs/heads/", 1)[1]
-        _run_command_list(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir, config=config)
+        _run_command_list(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir, config=config, timeout=30)
         return
 
     if revision.startswith("refs/tags/"):
@@ -720,7 +932,7 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
         return
 
     if _looks_like_commit(revision):
-        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config)
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config, timeout=30)
         return
 
     # Generic branch/tag name fallback
@@ -729,9 +941,9 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
             return
 
     try:
-        _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir, config=config)
+        _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir, config=config, timeout=30)
     except Exception:
-        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config)
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config, timeout=30)
 
 
 def _sync_projects_from_manifest(
@@ -757,14 +969,20 @@ def _sync_projects_from_manifest(
 
         if (project_path / ".git").exists():
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
-            _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config)
+            try:
+                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
+            except Exception as e:
+                print(f"WARNING: Failed to fetch {project['name']}: {str(e)}", flush=True)
         else:
             clone_cmd = ["git", "clone"]
             clone_depth = project.get("clone_depth", "")
             if clone_depth.isdigit() and int(clone_depth) > 0:
                 clone_cmd.extend(["--depth", clone_depth])
             clone_cmd.extend([project["url"], str(project_path)])
-            _run_command_list(clone_cmd, cwd=work_root, config=config)
+            try:
+                _run_command_list(clone_cmd, cwd=work_root, config=config, timeout=480)
+            except Exception as e:
+                raise RuntimeError(f"Failed to clone {project['name']}: {str(e)}")
 
         _checkout_revision(
             project_path,
@@ -923,8 +1141,31 @@ def pull_sdk(config):
         )
     else:
         print(f"Updating SDK Manifest repository to latest version", flush=True)
-        branch = sdk_config.get("manifest_repo_branch", "").strip()
-        _try_pull_branch_with_fallback(sdk_manifest_root, config, specified_branch=branch)
+        
+        # Check if mirror has changed (important for mirror switch scenario)
+        try:
+            current_origin = run_command("git remote get-url origin", cwd=sdk_manifest_root, check=False, config=config, silent=True, timeout=10).strip()
+        except Exception:
+            current_origin = ""
+        
+        if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(sdk_manifest_url):
+            print(
+                f"INFO: Detected mirror/source change for SDK manifest repo:\n"
+                f"      from: {current_origin}\n"
+                f"      to  : {sdk_manifest_url}\n"
+                f"      action: remove local manifest repo and re-clone",
+                flush=True,
+            )
+            _rmtree_with_retry(sdk_manifest_root)
+            run_command(
+                f"git clone {sdk_manifest_url} {sdk_manifest_root}",
+                cwd=sdk_manifest_root.parent,
+                config=config
+            )
+        else:
+            # No mirror change, proceed with pull
+            branch = sdk_config.get("manifest_repo_branch", "").strip()
+            _try_pull_branch_with_fallback(sdk_manifest_root, config, specified_branch=branch)
     
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"

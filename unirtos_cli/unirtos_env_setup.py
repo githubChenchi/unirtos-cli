@@ -893,13 +893,16 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
     if not tag:
         return False
 
+    # Ensure cwd is a string (critical for git-bash compatibility)
+    repo_dir_str = str(repo_dir)
+    
     try:
-        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
         return False
 
     try:
-        _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
         return False
 
@@ -907,13 +910,26 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
 def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: bool = False, version_tag: str = ""):
     revision = (revision or "").strip()
     version_tag = (version_tag or "").strip()
+    
+    # Ensure repo_dir is a string (critical for git-bash compatibility)
+    repo_dir_str = str(repo_dir)
 
     if prefer_tag and version_tag:
         if _checkout_tag(repo_dir, version_tag, config):
             return
+        # Provide detailed diagnostics for git-bash users
+        try:
+            available_tags = run_command("git tag", cwd=repo_dir_str, check=False, config=config, silent=True, timeout=10).strip()
+            tags_list = available_tags.split('\n') if available_tags else []
+            tags_preview = ', '.join(tags_list[-5:]) if tags_list else '(none)'
+        except Exception:
+            tags_preview = '(unable to list)'
+        
         raise RuntimeError(
             f"Tag not found: {version_tag}\n"
-            f"Resolution: Ensure git tag '{version_tag}' exists in the target repository."
+            f"Repository: {repo_dir_str}\n"
+            f"Recent tags: {tags_preview}\n"
+            f"Resolution: Ensure git tag '{version_tag}' exists. Try: cd {repo_dir_str} && git tag"
         )
 
     if not revision:
@@ -921,7 +937,7 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
 
     if revision.startswith("refs/heads/"):
         branch = revision.split("refs/heads/", 1)[1]
-        _run_command_list(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "checkout", "-B", branch, f"origin/{branch}"], cwd=repo_dir_str, config=config, timeout=30)
         return
 
     if revision.startswith("refs/tags/"):
@@ -932,7 +948,7 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
         return
 
     if _looks_like_commit(revision):
-        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir_str, config=config, timeout=30)
         return
 
     # Generic branch/tag name fallback
@@ -941,9 +957,9 @@ def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: 
             return
 
     try:
-        _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "checkout", "-B", revision, f"origin/{revision}"], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
-        _run_command_list(["git", "checkout", revision], cwd=repo_dir, config=config, timeout=30)
+        _run_command_list(["git", "checkout", revision], cwd=repo_dir_str, config=config, timeout=30)
 
 
 def _sync_projects_from_manifest(

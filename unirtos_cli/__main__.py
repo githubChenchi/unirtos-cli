@@ -289,22 +289,8 @@ def get_last_git_update_time(repo_dir: Path) -> float:
     return 0.0
 
 def is_valid_git_repo(path: Path) -> bool:
-    """Check if directory is a valid git repository."""
-    git_dir = path / ".git"
-    if not git_dir.exists():
-        return False
-    try:
-        result = subprocess.run(
-            "git rev-parse --git-dir",
-            cwd=path,
-            shell=True,
-            check=False,
-            capture_output=True,
-            timeout=5
-        )
-        return result.returncode == 0
-    except Exception:
-        return False
+    """Check if directory is a valid git repository (delegates to env_setup for cross-platform compatibility)."""
+    return env_setup.is_valid_git_repo(path)
 
 def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> tuple:
     """
@@ -743,6 +729,18 @@ def _create_from_remote_demo(project_name: str, project_dir: Path, force: bool =
                 f"       Reason: {str(e)}\n"
                 f"Resolution: Check network connection and repository URL"
             )
+
+        # After clone, fetch all tags to ensure tag checkout works
+        try:
+            env_setup.run_command(
+                "git fetch --tags",
+                cwd=target_dir,
+                config=config,
+                silent=True,
+                timeout=120
+            )
+        except Exception as e:
+            print(f"WARNING: Failed to fetch tags for demo: {str(e)}", flush=True)
 
         # Checkout specific revision/tag
         demo_version_tag = _normalize_version_tag(demo_version_dir)
@@ -1305,7 +1303,7 @@ def handle_menuconfig(args: argparse.Namespace) -> None:
         menuconfig_env["KCONFIG_CONFIG"] = str(app_config_path)
         menuconfig_env["UNIRTOS_APP_MENUCONFIG_DIR"] = str(app_menuconfig_dir)
         menuconfig_env["UNIRTOS_EXTERNAL_APP_DIR"] = str(project_dir)
-        subprocess.run(["unirtos", "menuconfig"], cwd=sdk_root, check=True, env=menuconfig_env)
+        subprocess.run(["unirtos", "menuconfig"], cwd=str(sdk_root), check=True, env=menuconfig_env)
         print("SUCCESS: menuconfig exited normally.")
     except FileNotFoundError as e:
         raise RuntimeError(

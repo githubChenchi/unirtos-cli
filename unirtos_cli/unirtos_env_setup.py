@@ -292,7 +292,7 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
     
     Args:
         cmd (str): Command string to be executed
-        cwd (Path, optional): Working directory for command execution
+        cwd (Path or str, optional): Working directory for command execution (auto-converted to string)
         check (bool, optional): Whether to check command execution result
         config (dict, optional): Env config dict
         silent (bool, optional): Whether to suppress output. Default is False.
@@ -304,11 +304,23 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
     Raises:
         CalledProcessError: When command execution fails
     """
+    # Ensure cwd is always a string (critical for git-bash and Windows compatibility)
+    if cwd is not None:
+        cwd = str(cwd)
     env = os.environ.copy()
     # Use UTF-8 for git commands (cross-platform compatibility)
-    # Use platform encoding for other commands
+    # Use platform encoding for other commands:
+    # - Windows CMD: GBK encoding
+    # - git-bash/MSYS2: UTF-8 (despite platform.system() == "Windows")
+    # - Linux/macOS: UTF-8
     is_git_cmd = bool(re.search(r"\bgit\b", cmd))
-    encoding = GIT_ENCODING if is_git_cmd else ("gbk" if platform.system() == "Windows" else "utf-8")
+    is_git_bash = os.environ.get("MSYSTEM") is not None
+    if is_git_cmd:
+        encoding = GIT_ENCODING
+    elif platform.system() == "Windows" and not is_git_bash:
+        encoding = "gbk"  # Windows CMD
+    else:
+        encoding = "utf-8"  # git-bash, Linux, macOS
     stream_git_progress = bool(re.search(r"\bgit\s+(clone|pull|fetch|checkout)\b", cmd))
     
     try:
@@ -394,7 +406,7 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
     
     Args:
         cmd_list: Command as list
-        cwd: Working directory
+        cwd: Working directory (auto-converted to string)
         config: Config dict (unused but for consistency)
         check: Whether to raise exception on non-zero exit code
         timeout: Timeout in seconds
@@ -405,6 +417,9 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
     Raises:
         RuntimeError: On timeout or (if check=True) on command failure
     """
+    # Ensure cwd is always a string (critical for git-bash and Windows compatibility)
+    if cwd is not None:
+        cwd = str(cwd)
     env = os.environ.copy()
     # Use UTF-8 for git commands
     encoding = GIT_ENCODING
@@ -896,6 +911,12 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
     # Ensure cwd is a string (critical for git-bash compatibility)
     repo_dir_str = str(repo_dir)
     
+    # First, ensure tags are up-to-date
+    try:
+        _run_command_list(["git", "fetch", "--tags"], cwd=repo_dir_str, config=config, timeout=120, check=False)
+    except Exception:
+        pass  # Ignore fetch failures, proceed with checkout attempt
+    
     try:
         _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
@@ -905,6 +926,8 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
         _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
         return False
+    
+    return True
 
 
 def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: bool = False, version_tag: str = ""):
@@ -999,6 +1022,12 @@ def _sync_projects_from_manifest(
                 _run_command_list(clone_cmd, cwd=work_root, config=config, timeout=480)
             except Exception as e:
                 raise RuntimeError(f"Failed to clone {project['name']}: {str(e)}")
+            
+            # After clone, fetch all tags to ensure tag checkout works
+            try:
+                _run_command_list(["git", "fetch", "--tags"], cwd=project_path, config=config, timeout=120)
+            except Exception as e:
+                print(f"WARNING: Failed to fetch tags for {project['name']}: {str(e)}", flush=True)
 
         _checkout_revision(
             project_path,

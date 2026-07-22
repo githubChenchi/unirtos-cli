@@ -1,6 +1,6 @@
 chavis.chen@HF-D-000880C MINGW64 ~/Desktop
 $ unirtos-cli version
-unirtos-cli v1.0.17
+unirtos-cli v1.0.18
 
 chavis.chen@HF-D-000880C MINGW64 ~/Desktop
 $ unirtos-cli git-mirror

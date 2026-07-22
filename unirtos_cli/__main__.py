@@ -290,6 +290,7 @@ def get_last_git_update_time(repo_dir: Path) -> float:
 
 def is_valid_git_repo(path: Path) -> bool:
     """Check if directory is a valid git repository (delegates to env_setup for cross-platform compatibility)."""
+    env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     return env_setup.is_valid_git_repo(path)
 
 def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, force: bool = False, specified_branch: str = "", silent: bool = False) -> tuple:

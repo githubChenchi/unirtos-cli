@@ -515,6 +515,100 @@ def _parse_version_key(version_name: str):
     return key
 
 
+def _to_numeric_parts(version: str):
+    """Convert version string to numeric parts for nearest-version recommendation."""
+    s = (version or "").strip()
+    if s.startswith("v"):
+        s = s[1:]
+    parts = re.split(r"[._-]", s)
+    nums = []
+    for p in parts:
+        if p.isdigit():
+            nums.append(int(p))
+        else:
+            # Non-numeric suffixes are treated as 0 for distance comparison.
+            nums.append(0)
+    return nums
+
+
+def _pick_recommended_version(configured_version: str, available_versions: list) -> str:
+    """Pick the nearest available version to configured value; fallback to latest available."""
+    if not available_versions:
+        return ""
+
+    configured = _to_numeric_parts(configured_version)
+
+    def score(v: str):
+        nums = _to_numeric_parts(v)
+        max_len = max(len(configured), len(nums))
+        c = configured + [0] * (max_len - len(configured))
+        n = nums + [0] * (max_len - len(nums))
+
+        # Prioritize same major, then same minor, then absolute semantic distance.
+        same_major = 0 if (len(c) > 0 and len(n) > 0 and c[0] == n[0]) else 1
+        same_minor = 0 if (len(c) > 1 and len(n) > 1 and c[1] == n[1]) else 1
+        distance = sum(abs(a - b) for a, b in zip(c, n))
+
+        # Prefer higher version if scores tie.
+        latest_bias = tuple(-x for x in n)
+        return (same_major, same_minor, distance, latest_bias)
+
+    return min(available_versions, key=score)
+
+
+def _find_local_seed_repo(work_root: Path, project_rel_path: str) -> Path:
+    """Find an existing same-project git repo from sibling version directories as local clone seed."""
+    parent_dir = work_root.parent
+    if not parent_dir.exists():
+        return None
+
+    candidates = []
+    for item in parent_dir.iterdir():
+        if not item.is_dir() or item == work_root:
+            continue
+        if not item.name.startswith("v"):
+            continue
+        candidates.append(item)
+
+    # Prefer higher semantic version first.
+    candidates.sort(key=lambda p: _parse_version_key(p.name), reverse=True)
+
+    for version_dir in candidates:
+        seed_repo = version_dir / project_rel_path
+        if is_valid_git_repo(seed_repo):
+            return seed_repo
+
+    return None
+
+
+def _clone_project_from_local_seed(seed_repo: Path, project_path: Path, config: dict) -> bool:
+    """Clone from local seed repository into target path, returns True on success."""
+    temp_clone = project_path.parent / f"{project_path.name}.seed-{uuid.uuid4().hex[:8]}"
+
+    try:
+        if temp_clone.exists():
+            _rmtree_with_retry(temp_clone)
+
+        _run_command_list(
+            ["git", "clone", "--local", str(seed_repo), str(temp_clone)],
+            cwd=project_path.parent,
+            config=config,
+            timeout=480,
+        )
+
+        if project_path.exists():
+            _rmtree_with_retry(project_path)
+        temp_clone.rename(project_path)
+        return True
+    except Exception:
+        try:
+            if temp_clone.exists():
+                _rmtree_with_retry(temp_clone)
+        except Exception:
+            pass
+        return False
+
+
 def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
     """Remove directory tree with platform-aware retry logic for file lock issues.
     
@@ -712,6 +806,84 @@ def get_latest_sdk_version(config: dict) -> str:
     version_dirs.sort(key=_parse_version_key, reverse=True)
     # Always return version without 'v' prefix for config storage
     return _strip_version_prefix(version_dirs[0])
+
+
+def _ensure_sdk_version_exists_in_manifest(config: dict, unirtos_root: Path, config_path: str = "env_config.json") -> None:
+    """Validate configured SDK version exists in SDK manifest repository."""
+    sdk_config, sdk_version = _require_sdk_config(config)
+    sdk_manifest_url = resolve_manifest_repo_url(config, "sdk")
+    branch = sdk_config.get("manifest_repo_branch", "").strip()
+
+    sdk_manifest_root = unirtos_root / "sdk" / "manifests"
+    _sync_manifest_repo(sdk_manifest_url, sdk_manifest_root, config, specified_branch=branch, silent=True)
+
+    manifest_file = sdk_manifest_root / f"v{sdk_version}" / "default.xml"
+    if manifest_file.exists():
+        return
+
+    available_versions = []
+    if sdk_manifest_root.exists():
+        for item in sdk_manifest_root.iterdir():
+            if item.is_dir() and item.name.startswith("v") and (item / "default.xml").exists():
+                available_versions.append(_strip_version_prefix(item.name))
+    available_versions.sort(key=lambda v: _parse_version_key(f"v{v}"), reverse=True)
+    recommended = _pick_recommended_version(sdk_version, available_versions)
+    available_text = ", ".join(available_versions) if available_versions else "(none)"
+    fix_hint = (
+        f'python -c "import json,pathlib; p=pathlib.Path(r\"{config_path}\"); '
+        f'd=json.loads(p.read_text(encoding=\"utf-8\")); '
+        f'd.setdefault(\"sdk\", {{}})[\"version\"]=\"{recommended}\"; '
+        f'p.write_text(json.dumps(d, ensure_ascii=False, indent=2)+\"\\n\", encoding=\"utf-8\")" && '
+        f'unirtos-cli env-setup -d "{Path(config_path).absolute().parent}"'
+    ) if recommended else "No recommended version found because manifest has no valid versions."
+
+    raise RuntimeError(
+        "Configured SDK version does not exist in manifests.\n"
+        f"Current config value: sdk.version={sdk_version}\n"
+        f"Manifest repo: {sdk_manifest_url}\n"
+        f"Expected manifest file: {manifest_file}\n"
+        f"Available SDK versions: {available_text}\n"
+        f"Recommended nearest version: {recommended if recommended else '(none)'}\n"
+        "Copy-paste fix:\n"
+        f"{fix_hint}"
+    )
+
+
+def _ensure_lib_version_exists_in_manifest(lib_config: dict, lib_manifest_root: Path, config_path: str = "env_config.json") -> None:
+    """Validate configured library version exists in library manifest repository."""
+    lib_name = str(lib_config.get("name", "")).strip()
+    lib_version = str(lib_config.get("version", "")).strip()
+    manifest_file = lib_manifest_root / lib_name / f"v{lib_version}" / "default.xml"
+    if manifest_file.exists():
+        return
+
+    available_versions = []
+    lib_root = lib_manifest_root / lib_name
+    if lib_root.exists() and lib_root.is_dir():
+        for item in lib_root.iterdir():
+            if item.is_dir() and item.name.startswith("v") and (item / "default.xml").exists():
+                available_versions.append(_strip_version_prefix(item.name))
+    available_versions.sort(key=lambda v: _parse_version_key(f"v{v}"), reverse=True)
+    recommended = _pick_recommended_version(lib_version, available_versions)
+    available_text = ", ".join(available_versions) if available_versions else "(none)"
+    fix_hint = (
+        f'python -c "import json,pathlib; p=pathlib.Path(r\"{config_path}\"); '
+        f'd=json.loads(p.read_text(encoding=\"utf-8\")); '
+        f'libs=d.get(\"libraries\",{{}}).get(\"list\",[]); '
+        f'[(item.update({{\"version\":\"{recommended}\"}})) for item in libs if item.get(\"name\")==\"{lib_name}\"]; '
+        f'p.write_text(json.dumps(d, ensure_ascii=False, indent=2)+\"\\n\", encoding=\"utf-8\")" && '
+        f'unirtos-cli env-setup -d "{Path(config_path).absolute().parent}"'
+    ) if recommended else "No recommended version found because this library has no valid versions in manifest."
+
+    raise RuntimeError(
+        "Configured library version does not exist in manifests.\n"
+        f"Current config value: libraries.list[name={lib_name}].version={lib_version}\n"
+        f"Expected manifest file: {manifest_file}\n"
+        f"Available versions for {lib_name}: {available_text}\n"
+        f"Recommended nearest version: {recommended if recommended else '(none)'}\n"
+        "Copy-paste fix:\n"
+        f"{fix_hint}"
+    )
 
 
 def create_vscode_workspace(config: dict, config_path: Path) -> Path:
@@ -1013,21 +1185,42 @@ def _sync_projects_from_manifest(
             except Exception as e:
                 print(f"WARNING: Failed to fetch {project['name']}: {str(e)}", flush=True)
         else:
-            clone_cmd = ["git", "clone"]
-            clone_depth = project.get("clone_depth", "")
-            if clone_depth.isdigit() and int(clone_depth) > 0:
-                clone_cmd.extend(["--depth", clone_depth])
-            clone_cmd.extend([project["url"], str(project_path)])
-            try:
-                _run_command_list(clone_cmd, cwd=work_root, config=config, timeout=480)
-            except Exception as e:
-                raise RuntimeError(f"Failed to clone {project['name']}: {str(e)}")
+            cloned_from_seed = False
+
+            # Fast path: clone from same project in another local version directory.
+            seed_repo = _find_local_seed_repo(work_root, project["path"])
+            if seed_repo is not None:
+                print(
+                    f"INFO: Reusing local repo as seed for faster clone: {seed_repo}",
+                    flush=True,
+                )
+                cloned_from_seed = _clone_project_from_local_seed(seed_repo, project_path, config)
+                if not cloned_from_seed:
+                    print(
+                        f"WARNING: Local seed clone failed for {project['name']}, fallback to remote clone",
+                        flush=True,
+                    )
+
+            if not cloned_from_seed:
+                clone_cmd = ["git", "clone"]
+                clone_depth = project.get("clone_depth", "")
+                if clone_depth.isdigit() and int(clone_depth) > 0:
+                    clone_cmd.extend(["--depth", clone_depth])
+                clone_cmd.extend([project["url"], str(project_path)])
+                try:
+                    _run_command_list(clone_cmd, cwd=work_root, config=config, timeout=480)
+                except Exception as e:
+                    raise RuntimeError(f"Failed to clone {project['name']}: {str(e)}")
+
+            # Ensure cloned repo origin matches current mirror/override URL.
+            _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
             
-            # After clone, fetch all tags to ensure tag checkout works
+            # After clone, perform a full fetch to align refs after mirror switch,
+            # and ensure tag checkout works reliably.
             try:
-                _run_command_list(["git", "fetch", "--tags"], cwd=project_path, config=config, timeout=120)
+                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
             except Exception as e:
-                print(f"WARNING: Failed to fetch tags for {project['name']}: {str(e)}", flush=True)
+                print(f"WARNING: Failed to fetch refs for {project['name']}: {str(e)}", flush=True)
 
         _checkout_revision(
             project_path,
@@ -1389,7 +1582,7 @@ def sync_existing_lib_repo_remotes(lib_config, unirtos_root, config, lib_manifes
         if (project_path / ".git").exists():
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
 
-def batch_process_libraries(config):
+def batch_process_libraries(config, config_path: str = "env_config.json"):
     """
     Batch process all dependent libraries declared in configuration file (version check + pull/update).
     Args:
@@ -1410,10 +1603,11 @@ def batch_process_libraries(config):
         print("\n===== Skip library processing: 'libraries.list' is missing, not a list, or empty =====", flush=True)
         return
     
-	# Iterate over the 'list' field under 'libraries'
+    # Iterate over the 'list' field under 'libraries'
     unirtos_root = get_unirtos_root(config)
     lib_manifest_root = prepare_lib_manifest_repo(config, unirtos_root)
     for lib_config in libraries_config["list"]:
+        _ensure_lib_version_exists_in_manifest(lib_config, lib_manifest_root, config_path=config_path)
         print(f"\n--- Processing library: {lib_config['name']} v{lib_config['version']} ---", flush=True)
         if not check_lib_version(lib_config, unirtos_root):
             pull_lib(lib_config, unirtos_root, config, lib_manifest_root)
@@ -1435,12 +1629,17 @@ def main():
         # Parse command-line arguments + load configuration
         args = parse_args()
         config = load_config(args.config)
+        config_path = str(Path(args.config).absolute())
         _, sdk_version = _require_sdk_config(config, str(args.config))
         unirtos_root = get_unirtos_root(config)
         print(f"Unirtos common storage directory: {unirtos_root}", flush=True)
         
         # Pre-check (validate git tool)
         check_git_installed(config)
+
+        # Validate configured versions exist in manifests before pull/switch.
+        print("\n===== Validate Configured Versions In Manifests =====", flush=True)
+        _ensure_sdk_version_exists_in_manifest(config, unirtos_root, config_path=config_path)
 
         # Process SDK
         print("\n===== Check/Pull SDK =====", flush=True)
@@ -1451,7 +1650,7 @@ def main():
         
         # Batch process libraries
         print("\n===== Batch Process Dependent Libraries =====", flush=True)
-        batch_process_libraries(config)
+        batch_process_libraries(config, config_path=config_path)
         
         # Output final environment information
         print("\n===== Environment initialization completed! =====", flush=True)

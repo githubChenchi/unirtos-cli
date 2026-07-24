@@ -62,6 +62,9 @@ MANIFEST_REPO_PATHS = {
 # Individual tools may use different encodings for other purposes
 GIT_ENCODING = "utf-8"
 
+# In-process cache to avoid duplicate manifest sync in one env-setup run.
+_SYNCED_MANIFEST_REPOS = set()
+
 # ===================== Command-line Argument Parsing =====================
 def parse_args():
     """
@@ -287,6 +290,20 @@ def _ensure_remote_origin_url(repo_dir: Path, desired_repo_url: str, config: dic
             if not silent:
                 print(f"WARNING: Failed to update origin URL: {str(e)}", flush=True)
 
+
+def _maybe_log_slow_git_command(cmd_display: str, elapsed_seconds: float, cwd=None, threshold_seconds: float = 8.0) -> None:
+    """Emit a diagnostic log when a git command takes unusually long."""
+    if elapsed_seconds < threshold_seconds:
+        return
+    if not re.search(r"\bgit\b", str(cmd_display or "")):
+        return
+
+    cwd_text = f" (cwd: {cwd})" if cwd else ""
+    print(
+        f"INFO: Slow git command ({elapsed_seconds:.1f}s): {cmd_display}{cwd_text}",
+        flush=True,
+    )
+
 def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=None):
     """
     Cross-platform execution of shell commands.
@@ -327,6 +344,7 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
     try:
         if stream_git_progress:
             try:
+                start_time = time.time()
                 process = subprocess.Popen(
                     cmd,
                     cwd=cwd,
@@ -349,6 +367,7 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
 
                 return_code = process.wait(timeout=timeout) if timeout else process.wait()
                 output = "".join(output_lines)
+                _maybe_log_slow_git_command(cmd, time.time() - start_time, cwd=cwd)
                 if check and return_code != 0:
                     raise subprocess.CalledProcessError(return_code, cmd, output=output, stderr="")
                 return output
@@ -358,6 +377,7 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
                     print(f"WARNING: Command timed out after {timeout}s: {cmd}", flush=True)
                 raise RuntimeError(f"Command timeout after {timeout}s: {cmd}")
         else:
+            start_time = time.time()
             result = subprocess.run(
                 cmd,
                 cwd=cwd,
@@ -371,6 +391,7 @@ def run_command(cmd, cwd=None, check=True, config=None, silent=False, timeout=No
                 timeout=timeout,
                 creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0
             )
+            _maybe_log_slow_git_command(cmd, time.time() - start_time, cwd=cwd)
             return result.stdout
     except subprocess.TimeoutExpired:
         if not silent:
@@ -433,6 +454,7 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
     try:
         if stream_git_progress:
             try:
+                start_time = time.time()
                 process = subprocess.Popen(
                     cmd_list,
                     cwd=cwd,
@@ -453,6 +475,7 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
 
                 return_code = process.wait(timeout=timeout) if timeout else process.wait()
                 output = "".join(output_lines)
+                _maybe_log_slow_git_command(" ".join(cmd_list), time.time() - start_time, cwd=cwd)
                 if check and return_code != 0:
                     raise subprocess.CalledProcessError(return_code, cmd_list, output=output, stderr="")
                 return output
@@ -460,6 +483,7 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
                 process.kill()
                 raise RuntimeError(f"Command timeout after {timeout}s: {' '.join(cmd_list)}")
         else:
+            start_time = time.time()
             result = subprocess.run(
                 cmd_list,
                 cwd=cwd,
@@ -472,6 +496,7 @@ def _run_command_list(cmd_list, cwd=None, config=None, check=True, timeout=None)
                 timeout=timeout,
                 creationflags=subprocess.CREATE_NO_WINDOW if platform.system() == "Windows" else 0,
             )
+            _maybe_log_slow_git_command(" ".join(cmd_list), time.time() - start_time, cwd=cwd)
             return result.stdout
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"Command timeout after {timeout}s: {' '.join(cmd_list)}")
@@ -774,6 +799,12 @@ def _configure_git_for_long_paths() -> None:
 def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified_branch: str = "", silent: bool = True) -> None:
     """Clone or update a manifest repository without emitting user-facing logs."""
     target_dir.parent.mkdir(parents=True, exist_ok=True)
+    branch_key = (specified_branch or "").strip()
+    cache_key = (str(target_dir.absolute()), _normalize_git_url(repo_url), branch_key)
+
+    # Skip duplicate sync in the same process run when repo is already valid.
+    if cache_key in _SYNCED_MANIFEST_REPOS and is_valid_git_repo(target_dir):
+        return
 
     # Improved validation: check if it's a valid git repo, not just .git existence
     if not is_valid_git_repo(target_dir):
@@ -781,6 +812,7 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
             run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent, timeout=480)
         except Exception as e:
             raise RuntimeError(f"Failed to clone manifest repo: {str(e)}")
+        _SYNCED_MANIFEST_REPOS.add(cache_key)
         return
 
     try:
@@ -801,6 +833,7 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
             run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent, timeout=480)
         except Exception as e:
             raise RuntimeError(f"Failed to re-clone manifest repo after mirror change: {str(e)}")
+        _SYNCED_MANIFEST_REPOS.add(cache_key)
         return
 
     if specified_branch and specified_branch.strip():
@@ -809,6 +842,7 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
             run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent, timeout=300)
         except Exception as e:
             raise RuntimeError(f"Failed to pull from branch {specified_branch}: {str(e)}")
+        _SYNCED_MANIFEST_REPOS.add(cache_key)
         return
 
     try:
@@ -818,6 +852,7 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
             run_command("git pull origin master", cwd=target_dir, config=config, silent=silent, timeout=300)
         except Exception as master_err:
             raise RuntimeError(f"Failed to pull from both main and master: main={str(main_err)}, master={str(master_err)}")
+    _SYNCED_MANIFEST_REPOS.add(cache_key)
 
 
 def get_latest_sdk_version(config: dict) -> str:
@@ -1125,24 +1160,63 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
 
     # Ensure cwd is a string (critical for git-bash compatibility)
     repo_dir_str = str(repo_dir)
-    
-    # First, ensure tags are up-to-date
+
+    tag_ref = f"refs/tags/{tag}"
+
+    # Fast path: use local tag directly when it already exists.
     try:
-        _run_command_list(["git", "fetch", "--tags"], cwd=repo_dir_str, config=config, timeout=120, check=False)
+        _run_command_list(["git", "rev-parse", "--verify", tag_ref], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
-        pass  # Ignore fetch failures, proceed with checkout attempt
-    
-    try:
-        _run_command_list(["git", "rev-parse", "--verify", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
-    except Exception:
-        return False
+        # Fallback: tag missing locally, fetch only this tag first.
+        if not _fetch_single_tag(repo_dir, tag, config):
+            return False
 
     try:
-        _run_command_list(["git", "checkout", "--detach", f"refs/tags/{tag}"], cwd=repo_dir_str, config=config, timeout=30)
+        _run_command_list(["git", "checkout", "--detach", tag_ref], cwd=repo_dir_str, config=config, timeout=30)
     except Exception:
         return False
     
     return True
+
+
+def _fetch_single_tag(repo_dir: Path, tag: str, config: dict) -> bool:
+    """Fetch one specific tag first; fallback to broad tag fetch only if needed."""
+    tag = (tag or "").strip()
+    if not tag:
+        return False
+
+    repo_dir_str = str(repo_dir)
+    tag_ref = f"refs/tags/{tag}"
+
+    # Minimal network path: request only target tag ref.
+    try:
+        print(f"INFO: Missing tag {tag}, fetching this tag only...", flush=True)
+        _run_command_list(
+            ["git", "fetch", "origin", "--no-tags", tag_ref + ":" + tag_ref],
+            cwd=repo_dir_str,
+            config=config,
+            timeout=120,
+            check=False,
+        )
+        _run_command_list(["git", "rev-parse", "--verify", tag_ref], cwd=repo_dir_str, config=config, timeout=30)
+        return True
+    except Exception:
+        pass
+
+    # Compatibility fallback for servers/refspec behaviors.
+    try:
+        print(f"INFO: Single-tag fetch fallback for {tag}: fetching tags...", flush=True)
+        _run_command_list(
+            ["git", "fetch", "origin", "--tags", "--prune"],
+            cwd=repo_dir_str,
+            config=config,
+            timeout=180,
+            check=False,
+        )
+        _run_command_list(["git", "rev-parse", "--verify", tag_ref], cwd=repo_dir_str, config=config, timeout=30)
+        return True
+    except Exception:
+        return False
 
 
 def _git_ref_exists(repo_dir: Path, ref_name: str, config: dict) -> bool:
@@ -1190,8 +1264,7 @@ def _ensure_revision_available_for_checkout(
         tag_ref = f"refs/tags/{version_tag}"
         if _git_ref_exists(repo_dir, tag_ref, config):
             return
-        print(f"INFO: Missing tag {version_tag}, fetching tags on-demand...", flush=True)
-        _run_command_list(["git", "fetch", "origin", "--tags", "--prune"], cwd=repo_dir, config=config, timeout=180, check=False)
+        _fetch_single_tag(repo_dir, version_tag, config)
         return
 
     if not revision:
@@ -1202,8 +1275,7 @@ def _ensure_revision_available_for_checkout(
         tag_ref = f"refs/tags/{tag}"
         if _git_ref_exists(repo_dir, tag_ref, config):
             return
-        print(f"INFO: Missing manifest tag {tag}, fetching tags on-demand...", flush=True)
-        _run_command_list(["git", "fetch", "origin", "--tags", "--prune"], cwd=repo_dir, config=config, timeout=180, check=False)
+        _fetch_single_tag(repo_dir, tag, config)
         return
 
     if revision.startswith("refs/heads/"):
@@ -1301,14 +1373,13 @@ def _sync_projects_from_manifest(
     for idx, project in enumerate(projects, start=1):
         project_path = work_root / project["path"]
         project_path.parent.mkdir(parents=True, exist_ok=True)
+        cloned_from_seed = False
 
         print(f"[{idx}/{len(projects)}] {project['name']} -> {project['path']}", flush=True)
 
         if (project_path / ".git").exists():
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
         else:
-            cloned_from_seed = False
-
             # Fast path: clone from same project in another local version directory.
             seed_repo = _find_local_seed_repo(work_root, project["path"])
             if seed_repo is not None:
@@ -1337,14 +1408,22 @@ def _sync_projects_from_manifest(
             # Ensure cloned repo origin matches current mirror/override URL.
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
 
-        # Speed path: avoid unconditional full fetch (can block for a long time on Windows).
-        _ensure_revision_available_for_checkout(
-            project_path,
-            project.get("revision", ""),
-            config,
-            prefer_tag=prefer_tag,
-            version_tag=version_tag,
-        )
+        # Windows + local-seed speed path: skip prefetch and try checkout first.
+        # If checkout fails, fallback path below will do a full fetch retry.
+        skip_prefetch = cloned_from_seed and platform.system() == "Windows"
+        if skip_prefetch:
+            print(
+                f"INFO: Windows seed-clone fast path enabled for {project['name']} (skip prefetch)",
+                flush=True,
+            )
+        else:
+            _ensure_revision_available_for_checkout(
+                project_path,
+                project.get("revision", ""),
+                config,
+                prefer_tag=prefer_tag,
+                version_tag=version_tag,
+            )
 
         try:
             _checkout_revision(
@@ -1355,13 +1434,21 @@ def _sync_projects_from_manifest(
                 version_tag=version_tag,
             )
         except Exception as checkout_err:
-            # Fallback path: do one full fetch and retry checkout for robustness.
-            print(
-                f"INFO: Checkout failed for {project['name']}, running full fetch retry...",
-                flush=True,
-            )
+            # Fallback path: avoid heavy full-fetch for tag-driven checkout on Windows.
             try:
-                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
+                if prefer_tag and version_tag:
+                    print(
+                        f"INFO: Checkout failed for {project['name']}, retrying single-tag fetch...",
+                        flush=True,
+                    )
+                    if not _fetch_single_tag(project_path, version_tag, config):
+                        raise checkout_err
+                else:
+                    print(
+                        f"INFO: Checkout failed for {project['name']}, running full fetch retry...",
+                        flush=True,
+                    )
+                    _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
                 _checkout_revision(
                     project_path,
                     project.get("revision", ""),

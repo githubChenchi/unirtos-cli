@@ -20,6 +20,7 @@ import ssl
 import time
 import threading
 import uuid
+import stat
 from pathlib import Path
 import platform
 import xml.etree.ElementTree as ET
@@ -609,6 +610,32 @@ def _clone_project_from_local_seed(seed_repo: Path, project_path: Path, config: 
         return False
 
 
+def _clear_readonly_recursive(path: Path) -> None:
+    """Best-effort removal of Windows read-only attribute for a directory tree."""
+    if not path.exists():
+        return
+
+    try:
+        os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+    except Exception:
+        pass
+
+    for root, dirs, files in os.walk(path, topdown=False):
+        root_path = Path(root)
+        for name in files:
+            target = root_path / name
+            try:
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            except Exception:
+                pass
+        for name in dirs:
+            target = root_path / name
+            try:
+                os.chmod(target, stat.S_IWRITE | stat.S_IREAD)
+            except Exception:
+                pass
+
+
 def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
     """Remove directory tree with platform-aware retry logic for file lock issues.
     
@@ -616,10 +643,22 @@ def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
     On Windows: Uses exclusive locking, multi-tier cleanup with git state reset and background deletion.
     """
     is_windows = platform.system() == "Windows"
+
+    def _onerror_clear_readonly(func, target_path, exc_info):
+        try:
+            os.chmod(target_path, stat.S_IWRITE | stat.S_IREAD)
+            func(target_path)
+        except Exception:
+            pass
     
     for attempt in range(max_retries):
         try:
-            shutil.rmtree(path)
+            if is_windows:
+                # Windows: clear read-only flags before deletion (fixes WinError 5).
+                _clear_readonly_recursive(path)
+                shutil.rmtree(path, onerror=_onerror_clear_readonly)
+            else:
+                shutil.rmtree(path)
             return
         except OSError as e:
             if attempt < max_retries - 1:
@@ -661,7 +700,11 @@ def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
                             # Schedule background deletion (non-blocking)
                             def cleanup_async():
                                 try:
-                                    shutil.rmtree(temp_path)
+                                    if platform.system() == "Windows":
+                                        _clear_readonly_recursive(temp_path)
+                                        shutil.rmtree(temp_path, onerror=_onerror_clear_readonly)
+                                    else:
+                                        shutil.rmtree(temp_path)
                                 except Exception:
                                     pass
                             thread = threading.Thread(target=cleanup_async, daemon=True)
@@ -1102,6 +1145,89 @@ def _checkout_tag(repo_dir: Path, tag: str, config: dict) -> bool:
     return True
 
 
+def _git_ref_exists(repo_dir: Path, ref_name: str, config: dict) -> bool:
+    """Check whether a git ref exists locally."""
+    repo_dir_str = str(repo_dir)
+    try:
+        _run_command_list(
+            ["git", "rev-parse", "--verify", ref_name],
+            cwd=repo_dir_str,
+            config=config,
+            timeout=20,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _git_commit_exists(repo_dir: Path, commit_id: str, config: dict) -> bool:
+    """Check whether a commit object exists locally."""
+    repo_dir_str = str(repo_dir)
+    try:
+        _run_command_list(
+            ["git", "cat-file", "-e", f"{commit_id}^{{commit}}"],
+            cwd=repo_dir_str,
+            config=config,
+            timeout=20,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _ensure_revision_available_for_checkout(
+    repo_dir: Path,
+    revision: str,
+    config: dict,
+    prefer_tag: bool = False,
+    version_tag: str = "",
+) -> None:
+    """Perform lightweight, on-demand fetch only when target ref is missing locally."""
+    revision = (revision or "").strip()
+    version_tag = (version_tag or "").strip()
+
+    if prefer_tag and version_tag:
+        tag_ref = f"refs/tags/{version_tag}"
+        if _git_ref_exists(repo_dir, tag_ref, config):
+            return
+        print(f"INFO: Missing tag {version_tag}, fetching tags on-demand...", flush=True)
+        _run_command_list(["git", "fetch", "origin", "--tags", "--prune"], cwd=repo_dir, config=config, timeout=180, check=False)
+        return
+
+    if not revision:
+        return
+
+    if revision.startswith("refs/tags/"):
+        tag = revision.split("refs/tags/", 1)[1]
+        tag_ref = f"refs/tags/{tag}"
+        if _git_ref_exists(repo_dir, tag_ref, config):
+            return
+        print(f"INFO: Missing manifest tag {tag}, fetching tags on-demand...", flush=True)
+        _run_command_list(["git", "fetch", "origin", "--tags", "--prune"], cwd=repo_dir, config=config, timeout=180, check=False)
+        return
+
+    if revision.startswith("refs/heads/"):
+        branch = revision.split("refs/heads/", 1)[1]
+        remote_ref = f"refs/remotes/origin/{branch}"
+        if _git_ref_exists(repo_dir, remote_ref, config):
+            return
+        print(f"INFO: Missing branch origin/{branch}, fetching branch on-demand...", flush=True)
+        _run_command_list(
+            ["git", "fetch", "origin", f"refs/heads/{branch}:refs/remotes/origin/{branch}", "--prune"],
+            cwd=repo_dir,
+            config=config,
+            timeout=240,
+            check=False,
+        )
+        return
+
+    if _looks_like_commit(revision):
+        if _git_commit_exists(repo_dir, revision, config):
+            return
+        print(f"INFO: Missing commit {revision[:12]}, fetching refs on-demand...", flush=True)
+        _run_command_list(["git", "fetch", "origin", "--tags", "--prune"], cwd=repo_dir, config=config, timeout=240, check=False)
+
+
 def _checkout_revision(repo_dir: Path, revision: str, config: dict, prefer_tag: bool = False, version_tag: str = ""):
     revision = (revision or "").strip()
     version_tag = (version_tag or "").strip()
@@ -1180,10 +1306,6 @@ def _sync_projects_from_manifest(
 
         if (project_path / ".git").exists():
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
-            try:
-                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
-            except Exception as e:
-                print(f"WARNING: Failed to fetch {project['name']}: {str(e)}", flush=True)
         else:
             cloned_from_seed = False
 
@@ -1214,21 +1336,41 @@ def _sync_projects_from_manifest(
 
             # Ensure cloned repo origin matches current mirror/override URL.
             _ensure_remote_origin_url(project_path, project["url"], config, silent=False)
-            
-            # After clone, perform a full fetch to align refs after mirror switch,
-            # and ensure tag checkout works reliably.
-            try:
-                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
-            except Exception as e:
-                print(f"WARNING: Failed to fetch refs for {project['name']}: {str(e)}", flush=True)
 
-        _checkout_revision(
+        # Speed path: avoid unconditional full fetch (can block for a long time on Windows).
+        _ensure_revision_available_for_checkout(
             project_path,
             project.get("revision", ""),
             config,
             prefer_tag=prefer_tag,
             version_tag=version_tag,
         )
+
+        try:
+            _checkout_revision(
+                project_path,
+                project.get("revision", ""),
+                config,
+                prefer_tag=prefer_tag,
+                version_tag=version_tag,
+            )
+        except Exception as checkout_err:
+            # Fallback path: do one full fetch and retry checkout for robustness.
+            print(
+                f"INFO: Checkout failed for {project['name']}, running full fetch retry...",
+                flush=True,
+            )
+            try:
+                _run_command_list(["git", "fetch", "--all", "--tags", "--prune"], cwd=project_path, config=config, timeout=300)
+                _checkout_revision(
+                    project_path,
+                    project.get("revision", ""),
+                    config,
+                    prefer_tag=prefer_tag,
+                    version_tag=version_tag,
+                )
+            except Exception:
+                raise checkout_err
 
 
 def _try_pull_branch_with_fallback(repo_dir: Path, config: dict, specified_branch: str = ""):

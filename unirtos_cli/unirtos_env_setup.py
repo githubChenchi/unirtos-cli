@@ -796,6 +796,54 @@ def _configure_git_for_long_paths() -> None:
             pass  # Ignore if git is not available
 
 
+def _sync_repo_branch_from_origin(repo_dir: Path, branch: str, config: dict, silent: bool = True) -> bool:
+    """Sync local repo to origin/<branch> via fetch + checkout/reset; returns False if branch doesn't exist remotely."""
+    branch = (branch or "").strip()
+    if not branch:
+        return False
+
+    # Fetch only the target branch into refs/remotes/origin/<branch>.
+    try:
+        run_command(
+            f"git fetch origin refs/heads/{branch}:refs/remotes/origin/{branch} --prune",
+            cwd=repo_dir,
+            check=False,
+            config=config,
+            silent=silent,
+            timeout=300,
+        )
+        run_command(
+            f"git rev-parse --verify refs/remotes/origin/{branch}",
+            cwd=repo_dir,
+            check=True,
+            config=config,
+            silent=True,
+            timeout=30,
+        )
+    except Exception:
+        return False
+
+    # Force-align worktree/branch to remote branch tip.
+    run_command("git reset --hard", cwd=repo_dir, check=False, config=config, silent=True, timeout=30)
+    run_command(
+        f"git checkout -B {branch} origin/{branch}",
+        cwd=repo_dir,
+        check=True,
+        config=config,
+        silent=silent,
+        timeout=120,
+    )
+    run_command(
+        f"git reset --hard origin/{branch}",
+        cwd=repo_dir,
+        check=True,
+        config=config,
+        silent=True,
+        timeout=60,
+    )
+    return True
+
+
 def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified_branch: str = "", silent: bool = True) -> None:
     """Clone or update a manifest repository without emitting user-facing logs."""
     target_dir.parent.mkdir(parents=True, exist_ok=True)
@@ -838,20 +886,16 @@ def _sync_manifest_repo(repo_url: str, target_dir: Path, config: dict, specified
 
     if specified_branch and specified_branch.strip():
         specified_branch = specified_branch.strip()
-        try:
-            run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent, timeout=300)
-        except Exception as e:
-            raise RuntimeError(f"Failed to pull from branch {specified_branch}: {str(e)}")
+        if not _sync_repo_branch_from_origin(target_dir, specified_branch, config, silent=silent):
+            raise RuntimeError(f"Failed to sync from specified branch '{specified_branch}': remote branch not found or inaccessible")
         _SYNCED_MANIFEST_REPOS.add(cache_key)
         return
 
-    try:
-        run_command("git pull origin main", cwd=target_dir, config=config, silent=silent, timeout=300)
-    except Exception as main_err:
-        try:
-            run_command("git pull origin master", cwd=target_dir, config=config, silent=silent, timeout=300)
-        except Exception as master_err:
-            raise RuntimeError(f"Failed to pull from both main and master: main={str(main_err)}, master={str(master_err)}")
+    main_ok = _sync_repo_branch_from_origin(target_dir, "main", config, silent=silent)
+    if not main_ok:
+        master_ok = _sync_repo_branch_from_origin(target_dir, "master", config, silent=silent)
+        if not master_ok:
+            raise RuntimeError("Failed to sync manifest repo from both main and master branches")
     _SYNCED_MANIFEST_REPOS.add(cache_key)
 
 

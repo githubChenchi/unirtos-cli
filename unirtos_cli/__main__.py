@@ -314,7 +314,7 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
     """
     env_setup = importlib.import_module("unirtos_cli.unirtos_env_setup")
     target_dir.parent.mkdir(parents=True, exist_ok=True)
-    
+
     # Configure git for long paths (important on Windows with git-bash)
     env_setup._configure_git_for_long_paths()
 
@@ -323,160 +323,37 @@ def sync_manifest_repo(repo_url: str, target_dir: Path, config: dict = None, for
         if s.endswith(".git"):
             s = s[:-4]
         return s
-    
-    def _rmtree_with_retry(path: Path, max_retries: int = 5) -> None:
-        """Remove directory tree with platform-aware retry logic.
-        
-        On Linux/macOS: Uses reference counting, quick simple retry with minimal delay.
-        On Windows: Uses exclusive locking, multi-tier cleanup with git state reset and background deletion.
-        """
-        is_windows = get_os_type() == "Windows"
-        
-        for attempt in range(max_retries):
-            try:
-                shutil.rmtree(path)
-                return
-            except OSError as e:
-                if attempt < max_retries - 1:
-                    # Platform-specific handling
-                    if is_windows:
-                        # Windows: multi-tier strategy
-                        if attempt == 0:
-                            # First attempt: git-level cleanup (doesn't kill any processes)
-                            try:
-                                git_dir = path / ".git"
-                                if git_dir.exists():
-                                    # Reset git state to release file handles
-                                    env_setup.run_command(
-                                        "git clean -fdx && git reset --hard HEAD",
-                                        cwd=path,
-                                        check=False,
-                                        config=None,
-                                        silent=True,
-                                    )
-                                    # Then run gc to optimize and release pack files
-                                    env_setup.run_command(
-                                        "git gc --prune=now",
-                                        cwd=path,
-                                        check=False,
-                                        config=None,
-                                        silent=True,
-                                    )
-                            except Exception:
-                                pass
-                        
-                        elif attempt == 1:
-                            # Second attempt: rename to temporary location
-                            # (allows new clone to start immediately while cleanup happens in background)
-                            try:
-                                temp_path = path.parent / f"{path.name}.delete-{uuid.uuid4().hex[:8]}"
-                                path.rename(temp_path)
-                                # Schedule background deletion (non-blocking)
-                                def cleanup_async():
-                                    try:
-                                        shutil.rmtree(temp_path)
-                                    except Exception:
-                                        pass
-                                thread = threading.Thread(target=cleanup_async, daemon=True)
-                                thread.start()
-                                return  # Success: renamed and queued for deletion
-                            except Exception:
-                                pass
-                        
-                        # Always wait with escalating delay before retry
-                        delay = 0.5 * (attempt + 1)
-                        time.sleep(delay)
-                    else:
-                        # Linux/macOS: reference counting allows fast retry
-                        # Simple short delay due to fast process/lock release
-                        time.sleep(0.1)
-                    continue
-                else:
-                    raise RuntimeError(
-                        f"Failed to remove directory after {max_retries} attempts: {path}\n"
-                        f"Reason: {str(e)}\n"
-                        f"Resolution:\n"
-                        f"  1. Close any editors or IDEs using files in this directory\n"
-                        f"  2. Manually delete: {path}\n"
-                        f"  3. Retry the operation"
-                    ) from e
-    
+
+    # First-time/invalid repo: unified sync logic will clone.
     if not is_valid_git_repo(target_dir):
-        # If the repository does not exist or is invalid: execute git clone
-        env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
+        env_setup._sync_manifest_repo(repo_url, target_dir, config or {}, specified_branch=specified_branch, silent=silent)
         return False, False
-    else:
-        # If origin URL does not match desired mirror/override URL, re-clone manifest repo.
-        mirror_switched = False
-        current_origin = env_setup.run_command(
-            "git remote get-url origin",
-            cwd=target_dir,
-            check=False,
-            config=config,
-            silent=True,
-        ).strip()
-        if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(repo_url):
-            if not silent:
-                print(
-                    f"INFO: Detected mirror/source change for manifest repo: {target_dir}\n"
-                    f"      from: {current_origin}\n"
-                    f"      to  : {repo_url}\n"
-                    f"      action: remove local manifest repo and re-clone",
-                    flush=True,
-                )
-            _rmtree_with_retry(target_dir)
-            env_setup.run_command(f"git clone {repo_url} {target_dir}", cwd=target_dir.parent, config=config, silent=silent)
-            mirror_switched = True
 
-        if mirror_switched:
-            return True, False
+    # URL mismatch should be handled immediately (re-clone), independent of refresh interval.
+    current_origin = env_setup.run_command(
+        "git remote get-url origin",
+        cwd=target_dir,
+        check=False,
+        config=config,
+        silent=True,
+    ).strip()
+    if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(repo_url):
+        env_setup._sync_manifest_repo(repo_url, target_dir, config or {}, specified_branch=specified_branch, silent=silent)
+        return True, False
 
-        # If the repository exists: determine whether git pull is needed
-        current_time = time.time()
-        last_update_time = get_last_git_update_time(target_dir)
-        time_diff = current_time - last_update_time
-        
-        will_pull = force or mirror_switched or time_diff > UPDATE_INTERVAL
-        is_auto_refresh = (not force) and (time_diff > UPDATE_INTERVAL)
-        
-        if will_pull:
-            # Forced update or more than 1 hour has elapsed: execute git pull with branch fallback
-            if specified_branch and specified_branch.strip():
-                # User specified a branch
-                specified_branch = specified_branch.strip()
-                try:
-                    if not silent:
-                        print(f"Attempting to pull from specified branch '{specified_branch}'...", flush=True)
-                    env_setup.run_command(f"git pull origin {specified_branch}", cwd=target_dir, config=config, silent=silent)
-                    if not silent:
-                        print(f"Successfully pulled from branch '{specified_branch}'", flush=True)
-                except Exception as err:
-                    raise RuntimeError(f"Failed to pull from specified branch '{specified_branch}': {str(err)}")
-            else:
-                # No branch specified, try main first, fallback to master
-                try:
-                    if not silent:
-                        print(f"Attempting to pull from 'main' branch...", flush=True)
-                    env_setup.run_command("git pull origin main", cwd=target_dir, config=config, silent=silent)
-                    if not silent:
-                        print(f"Successfully pulled from 'main' branch", flush=True)
-                except Exception as main_err:
-                    try:
-                        if not silent:
-                            print(f"INFO: Main branch pull failed, retrying with 'master' branch...", flush=True)
-                        env_setup.run_command("git pull origin master", cwd=target_dir, config=config, silent=silent)
-                        if not silent:
-                            print(f"Successfully pulled from 'master' branch", flush=True)
-                    except Exception as master_err:
-                        raise RuntimeError(
-                            f"Failed to pull from both 'main' and 'master' branches.\n"
-                            f"Main error: {str(main_err)}\n"
-                            f"Master error: {str(master_err)}"
-                        )
-            return True, is_auto_refresh
-        else:
-            # Not timed out and not forced: skip pull
-            return False, False
+    # Keep existing cadence: only refresh when forced or cache expired.
+    current_time = time.time()
+    last_update_time = get_last_git_update_time(target_dir)
+    time_diff = current_time - last_update_time
+
+    will_pull = force or time_diff > UPDATE_INTERVAL
+    is_auto_refresh = (not force) and (time_diff > UPDATE_INTERVAL)
+
+    if will_pull:
+        env_setup._sync_manifest_repo(repo_url, target_dir, config or {}, specified_branch=specified_branch, silent=silent)
+        return True, is_auto_refresh
+
+    return False, False
 
 
 def _normalize_version_tag(version: str) -> str:

@@ -1598,41 +1598,9 @@ def pull_sdk(config):
     sdk_manifest_root.mkdir(parents=True, exist_ok=True)
     sdk_code_dir.mkdir(parents=True, exist_ok=True)
     
-    # Clone/update manifest (try main first, fallback to master)
-    if not (sdk_manifest_root / ".git").exists():
-        print(f"Cloning SDK Manifest repository to: {sdk_manifest_root}", flush=True)
-        run_command(
-            f"git clone {sdk_manifest_url} {sdk_manifest_root}",
-            cwd=sdk_manifest_root.parent,
-            config=config
-        )
-    else:
-        print(f"Updating SDK Manifest repository to latest version", flush=True)
-        
-        # Check if mirror has changed (important for mirror switch scenario)
-        try:
-            current_origin = run_command("git remote get-url origin", cwd=sdk_manifest_root, check=False, config=config, silent=True, timeout=10).strip()
-        except Exception:
-            current_origin = ""
-        
-        if current_origin and _normalize_git_url(current_origin) != _normalize_git_url(sdk_manifest_url):
-            print(
-                f"INFO: Detected mirror/source change for SDK manifest repo:\n"
-                f"      from: {current_origin}\n"
-                f"      to  : {sdk_manifest_url}\n"
-                f"      action: remove local manifest repo and re-clone",
-                flush=True,
-            )
-            _rmtree_with_retry(sdk_manifest_root)
-            run_command(
-                f"git clone {sdk_manifest_url} {sdk_manifest_root}",
-                cwd=sdk_manifest_root.parent,
-                config=config
-            )
-        else:
-            # No mirror change, proceed with pull
-            branch = sdk_config.get("manifest_repo_branch", "").strip()
-            _try_pull_branch_with_fallback(sdk_manifest_root, config, specified_branch=branch)
+    # Clone/update manifest and enforce origin URL consistency (including user override URL).
+    branch = sdk_config.get("manifest_repo_branch", "").strip()
+    _sync_manifest_repo(sdk_manifest_url, sdk_manifest_root, config, specified_branch=branch, silent=False)
     
     # Verify manifest file in version directory
     manifest_file = sdk_manifest_dir / "default.xml"
@@ -1728,18 +1696,13 @@ def prepare_lib_manifest_repo(config, unirtos_root):
     # Ensure parent directory exists
     lib_manifest_root.mkdir(parents=True, exist_ok=True)
     
-    # Clone or update manifest repo (only once, try main first, fallback to master)
-    if not (lib_manifest_root / ".git").exists():
-        print(f"\n--- Cloning Library Manifest repository to: {lib_manifest_root} ---", flush=True)
-        run_command(
-            f"git clone {lib_manifest_url} {lib_manifest_root}",
-            cwd=lib_manifest_root.parent,
-            config=config
-        )
-    else:
-        print(f"\n===== Updating Library Manifest repository to latest version =====", flush=True)
-        branch = config["libraries"].get("manifest_repo_branch", "").strip()
-        _try_pull_branch_with_fallback(lib_manifest_root, config, specified_branch=branch)
+    # Clone/update manifest and enforce origin URL consistency (including user override URL).
+    print(f"\n===== Preparing Library Manifest repository =====", flush=True)
+    libraries_cfg = config.get("libraries", {}) if isinstance(config, dict) else {}
+    if not isinstance(libraries_cfg, dict):
+        libraries_cfg = {}
+    branch = libraries_cfg.get("manifest_repo_branch", "").strip()
+    _sync_manifest_repo(lib_manifest_url, lib_manifest_root, config, specified_branch=branch, silent=False)
     
     print(f"INFO: Library Manifest repo preparation completed: {lib_manifest_root}", flush=True)
     return lib_manifest_root
